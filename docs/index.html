@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>shed — Claude Code that learns you</title>
+<meta name="description" content="A silent shadow layer for Claude Code: picks the right notes from your past, watches for corrections, and grooms its own memory. Local-only by default." />
+<meta property="og:title" content="shed — Claude Code that learns you" />
+<meta property="og:description" content="Silent memory injection, self-updating CLAUDE.md, self-grooming notes." />
+<meta property="og:type" content="website" />
+<style>
+  :root {
+    --bg: #0a0b0f;
+    --bg-elev: #14161d;
+    --bg-card: #1a1d27;
+    --bg-deep: #07080b;
+    --text: #f1f3f5;
+    --text-dim: #7a8190;
+    --text-faint: #4a5160;
+    --accent: #b487ff;
+    --accent-glow: rgba(180, 135, 255, 0.5);
+    --accent-soft: rgba(180, 135, 255, 0.12);
+    --green: #61d99b;
+    --red:   #ff7e8a;
+    --warm:  #ffb547;
+    --teal:  #7be3d2;
+    --mono: 'SF Mono', ui-monospace, Menlo, Consolas, monospace;
+    --body: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background: var(--bg); color: var(--text); font-family: var(--body); -webkit-font-smoothing: antialiased; min-height: 100vh; }
+  body {
+    background:
+      radial-gradient(900px 600px at 10% -10%, rgba(180, 135, 255, 0.08), transparent 60%),
+      radial-gradient(700px 500px at 110% 60%, rgba(123, 227, 210, 0.05), transparent 60%),
+      var(--bg);
+  }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 36px 24px 64px; }
+  header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 28px; }
+  .brand { display: flex; align-items: center; gap: 14px; }
+  .logo {
+    width: 38px; height: 38px; border-radius: 9px;
+    background: linear-gradient(135deg, var(--accent), #6f4ad9);
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 0 24px var(--accent-glow);
+    font-family: var(--mono); font-weight: 700; color: #fff;
+  }
+  .brand-name { font-family: var(--mono); font-size: 14px; letter-spacing: 0.02em; }
+  .brand-name b { color: var(--accent); }
+  .repo-link {
+    font-family: var(--mono); font-size: 12px; color: var(--text-dim);
+    text-decoration: none; padding: 6px 12px; border: 1px solid var(--text-faint);
+    border-radius: 6px; transition: all 150ms;
+  }
+  .repo-link:hover { border-color: var(--text-dim); color: var(--text); }
+
+  .hero { margin-bottom: 32px; }
+  h1 {
+    font-size: clamp(28px, 5vw, 44px); line-height: 1.1; letter-spacing: -0.02em;
+    font-weight: 700; margin-bottom: 12px;
+  }
+  h1 .accent { color: var(--accent); }
+  .lede { font-size: 16px; color: var(--text-dim); max-width: 720px; line-height: 1.55; }
+  .lede kbd {
+    font-family: var(--mono); background: var(--bg-elev); border: 1px solid #2a2e3a;
+    border-bottom-width: 2px; padding: 1px 7px; border-radius: 5px; color: var(--text); font-size: 12.5px;
+  }
+
+  /* Toolbar */
+  .toolbar {
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    background: var(--bg-elev); border: 1px solid #232631; border-radius: 12px;
+    padding: 12px 16px; margin-bottom: 14px; font-family: var(--mono); font-size: 12.5px;
+  }
+  .toolbar button {
+    background: var(--bg-card); color: var(--text); border: 1px solid #2a2e3a;
+    border-radius: 6px; padding: 6px 12px; font-family: var(--mono); font-size: 12.5px;
+    cursor: pointer; transition: all 120ms;
+  }
+  .toolbar button:hover { border-color: var(--accent); color: var(--accent); }
+  .toolbar button.primary { background: var(--accent); color: #1a1024; border-color: var(--accent); }
+  .toolbar button.primary:hover { background: #c9a3ff; color: #1a1024; }
+  .toolbar input[type="range"] { accent-color: var(--accent); width: 220px; }
+  .toolbar label { color: var(--text-dim); display: inline-flex; align-items: center; gap: 6px; }
+  .toolbar input[type="checkbox"] { accent-color: var(--accent); }
+  .toolbar .step-label { color: var(--text-faint); }
+
+  /* Stage */
+  .stage {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 14px;
+    margin-bottom: 14px;
+  }
+  @media (max-width: 920px) { .stage { grid-template-columns: 1fr; } }
+  .pane {
+    background: var(--bg-elev); border: 1px solid #232631; border-radius: 12px;
+    overflow: hidden; min-height: 420px; display: flex; flex-direction: column;
+  }
+  .pane-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 14px; border-bottom: 1px solid #232631;
+    font-family: var(--mono); font-size: 11.5px; color: var(--text-dim);
+    background: var(--bg-deep);
+  }
+  .pane-head .dots { display: inline-flex; gap: 5px; }
+  .pane-head .dot { width: 9px; height: 9px; border-radius: 50%; background: #3a3f4d; }
+  .pane-head .pill {
+    padding: 3px 9px; border: 1px solid var(--text-faint); border-radius: 999px; font-size: 10.5px;
+  }
+  .pane-head .pill.live { color: var(--green); border-color: rgba(97, 217, 155, 0.4); }
+  .pane-head .pill.silent { color: var(--accent); border-color: rgba(180, 135, 255, 0.45); }
+
+  /* Terminal pane */
+  .term {
+    padding: 14px; font-family: var(--mono); font-size: 13px;
+    line-height: 1.55; color: var(--text); overflow-y: auto; flex: 1;
+    background: var(--bg-deep);
+  }
+  .term .prompt { color: var(--accent); }
+  .term .user { color: var(--teal); white-space: pre-wrap; }
+  .term .assist { color: var(--text); white-space: pre-wrap; opacity: 0.9; }
+  .term .meta { color: var(--text-faint); font-size: 11.5px; }
+  .term .cursor::after {
+    content: "▌"; color: var(--accent); animation: blink 1s steps(1) infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* Overlay pane */
+  .overlay { padding: 14px; flex: 1; overflow-y: auto; font-family: var(--mono); font-size: 12.5px; }
+  .overlay h3 {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--text-faint); margin: 18px 0 8px; font-weight: 600;
+  }
+  .overlay h3:first-child { margin-top: 0; }
+  .candidate {
+    display: grid; grid-template-columns: 1fr auto auto; gap: 10px; align-items: center;
+    padding: 8px 10px; border: 1px solid #232631; border-radius: 6px; margin-bottom: 6px;
+    background: var(--bg-deep); transition: all 200ms;
+  }
+  .candidate.chosen { border-color: var(--accent); background: var(--accent-soft); }
+  .candidate.chosen .score { color: var(--accent); }
+  .candidate .slug { color: var(--text); }
+  .candidate .score { color: var(--text-dim); font-variant-numeric: tabular-nums; }
+  .candidate .badge {
+    color: var(--green); font-size: 10.5px; padding: 1px 6px; border-radius: 4px;
+    background: rgba(97, 217, 155, 0.12); border: 1px solid rgba(97, 217, 155, 0.3);
+  }
+  .candidate.skipped .badge { color: var(--text-faint); border-color: var(--text-faint); background: transparent; }
+  .ctx-block {
+    border: 1px dashed var(--accent); border-radius: 8px; padding: 10px;
+    background: var(--accent-soft); color: var(--text);
+    white-space: pre-wrap; line-height: 1.5; font-size: 12px;
+  }
+  .ctx-block .tag { color: var(--accent); }
+  .lesson {
+    border: 1px solid var(--warm); border-radius: 8px; padding: 10px;
+    background: rgba(255, 181, 71, 0.08); margin-top: 8px;
+  }
+  .lesson .head { display: flex; justify-content: space-between; color: var(--warm); font-size: 11px; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.06em; }
+  .lesson .body { color: var(--text); white-space: pre-wrap; }
+  .empty { color: var(--text-faint); font-style: italic; padding: 12px 0; }
+  .silent-only { transition: opacity 200ms; }
+  body:not(.show-silent) .silent-only { opacity: 0.18; }
+
+  /* Bottom: brief timeline */
+  .brief {
+    background: var(--bg-elev); border: 1px solid #232631; border-radius: 12px;
+    padding: 16px 18px;
+  }
+  .brief h2 { font-size: 14px; color: var(--text); display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+  .brief h2 .pill { font-family: var(--mono); font-size: 11px; padding: 2px 8px; border: 1px solid var(--accent); border-radius: 999px; color: var(--accent); }
+  .brief .lede { font-size: 13px; margin-bottom: 12px; }
+  .brief-list { display: grid; gap: 8px; }
+  .brief-item {
+    display: grid; grid-template-columns: auto 1fr auto; gap: 12px; align-items: center;
+    padding: 10px 12px; border: 1px solid #2a2e3a; border-radius: 8px;
+    background: var(--bg-deep); font-family: var(--mono); font-size: 12.5px;
+  }
+  .brief-item .cat {
+    color: var(--warm); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em;
+    border: 1px solid rgba(255, 181, 71, 0.4); background: rgba(255, 181, 71, 0.08);
+    border-radius: 4px; padding: 2px 7px; min-width: 100px; text-align: center;
+  }
+  .brief-item .title { color: var(--text); }
+  .brief-item .keys { color: var(--text-dim); font-size: 11px; }
+  .brief-item .keys b { color: var(--text); border: 1px solid #2a2e3a; padding: 1px 6px; border-radius: 4px; }
+  .brief-item.accepted { border-color: var(--green); background: rgba(97, 217, 155, 0.06); }
+  .brief-item.accepted .cat { color: var(--green); border-color: rgba(97, 217, 155, 0.4); background: rgba(97, 217, 155, 0.08); }
+  .brief-item.rejected { opacity: 0.5; text-decoration: line-through; }
+
+  footer { margin-top: 28px; color: var(--text-dim); font-size: 13px; line-height: 1.7; }
+  footer .stack { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 8px; font-family: var(--mono); font-size: 12.5px; }
+  footer a { color: var(--text); text-decoration: none; border-bottom: 1px solid var(--text-faint); padding-bottom: 1px; }
+  footer a:hover { color: var(--accent); border-color: var(--accent); }
+</style>
+</head>
+<body class="show-silent">
+<div class="wrap">
+
+  <header>
+    <div class="brand">
+      <div class="logo">s</div>
+      <div class="brand-name">casterly<b>git</b> / shed</div>
+    </div>
+    <a href="https://github.com/CasterlyGit/shed" class="repo-link">github →</a>
+  </header>
+
+  <section class="hero">
+    <h1><span class="accent">shed.</span> Claude Code that learns you.</h1>
+    <p class="lede">
+      A silent shadow layer for Claude Code. Picks the 2-3 most relevant notes from your past
+      and prepends them to every prompt. Watches for corrections, queues them as proposed lessons.
+      Grooms its own memory. Local embeddings, no LLM call, <kbd>&lt;200ms</kbd>. Local-only by default,
+      every proposal manually approved.
+    </p>
+  </section>
+
+  <div class="toolbar">
+    <button id="play" class="primary">▶ play</button>
+    <button id="step">step</button>
+    <button id="reset">reset</button>
+    <input id="scrub" type="range" min="0" max="0" value="0" />
+    <span class="step-label" id="step-label">0 / 0</span>
+    <label><input id="silent-toggle" type="checkbox" checked /> show silent decisions</label>
+  </div>
+
+  <div class="stage">
+
+    <div class="pane">
+      <div class="pane-head">
+        <span class="dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>
+        <span>claude-code · ~/Documents/Dev/widget-api</span>
+        <span class="pill live">live</span>
+      </div>
+      <div class="term" id="term"></div>
+    </div>
+
+    <div class="pane">
+      <div class="pane-head">
+        <span class="dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></span>
+        <span>shed · silent overlay</span>
+        <span class="pill silent">invisible to claude unless injected</span>
+      </div>
+      <div class="overlay" id="overlay"></div>
+    </div>
+
+  </div>
+
+  <section class="brief">
+    <h2>tomorrow morning <span class="pill">SessionStart</span></h2>
+    <p class="lede">When you open the next Claude Code session, <code>shed brief</code> hands you the queue. j/k navigate, y accept, n reject, e edit, s skip, p pin.</p>
+    <div class="brief-list" id="brief-list"></div>
+  </section>
+
+  <footer>
+    Part of the stack:
+    <div class="stack">
+      <a href="https://github.com/CasterlyGit/laptop-dictation">laptop-dictation</a>
+      <a href="https://github.com/CasterlyGit/hand-signal">hand-signal</a>
+      <a href="https://github.com/CasterlyGit/curby">curby</a>
+      <a href="https://github.com/CasterlyGit/approver">approver</a>
+      <a href="https://github.com/CasterlyGit/shed"><b>shed</b></a>
+    </div>
+  </footer>
+
+</div>
+
+<script>
+// ----------------------------------------------------------------------
+// The simulated memory store. Slugs match what shed actually generates.
+// ----------------------------------------------------------------------
+const memories = {
+  "uv-not-pip":     { title: "Use uv, not pip", category: "tool-choices",
+                      body: "- Always uv for Python. Never pip directly.\n- pyproject.toml, hatchling backend." },
+  "squash-merge":   { title: "Squash-merge PRs, delete branches", category: "workflow",
+                      body: "- Squash-merge every PR.\n- Delete the branch after merge.\n- Use Closes #N in the PR body." },
+  "always-pytest":  { title: "Run pytest before pushing", category: "workflow",
+                      body: "- pytest must be green locally before any git push.\n- Don't push on red." },
+  "typer-over-click":{title: "Prefer typer over click", category: "coding-preferences",
+                      body: "- typer for CLI scaffolding (autocomplete, type hints)." },
+  "co-author-trailer":{title:"Always include Claude co-author trailer", category: "workflow",
+                      body: "- Every commit: `Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>`" },
+  "rich-not-textual":{title: "Rich for CLI, not textual", category: "tool-choices",
+                      body: "- Rich keeps deps light. Textual is overkill for v0.1." },
+};
+
+// ----------------------------------------------------------------------
+// Script of turns. Each turn = (user prompt, candidate scores, chosen,
+// assistant gist, optional correction).
+// Scores are hand-tuned for the demo to feel realistic.
+// ----------------------------------------------------------------------
+const script = [
+  {
+    prompt: "set up the test suite for this project",
+    candidates: [
+      { slug: "always-pytest",    score: 0.71, chosen: true  },
+      { slug: "uv-not-pip",       score: 0.58, chosen: true  },
+      { slug: "squash-merge",     score: 0.21, chosen: false },
+      { slug: "typer-over-click", score: 0.18, chosen: false },
+    ],
+    assistant: "I'll add pytest with uv-managed deps. Writing tests/conftest.py and pyproject.toml additions.\n(running `uv add --dev pytest`)",
+  },
+  {
+    prompt: "now write a small CLI that wraps the API",
+    candidates: [
+      { slug: "typer-over-click",  score: 0.79, chosen: true  },
+      { slug: "rich-not-textual",  score: 0.62, chosen: true  },
+      { slug: "uv-not-pip",        score: 0.34, chosen: true  },
+      { slug: "squash-merge",      score: 0.11, chosen: false },
+    ],
+    assistant: "Scaffolding `widget` CLI with typer + Rich tables. No textual.",
+  },
+  {
+    prompt: "commit it and push to a feature branch",
+    candidates: [
+      { slug: "co-author-trailer", score: 0.83, chosen: true  },
+      { slug: "always-pytest",     score: 0.71, chosen: true  },
+      { slug: "squash-merge",      score: 0.66, chosen: true  },
+      { slug: "typer-over-click",  score: 0.14, chosen: false },
+    ],
+    assistant: "Running pytest first... 14 passed. Committing with the co-author trailer, pushing `feat/cli`.",
+  },
+  {
+    prompt: "no, don't push to main directly — always open a PR instead",
+    candidates: [
+      { slug: "squash-merge",      score: 0.74, chosen: true  },
+      { slug: "co-author-trailer", score: 0.42, chosen: true  },
+      { slug: "always-pytest",     score: 0.31, chosen: true  },
+      { slug: "uv-not-pip",        score: 0.09, chosen: false },
+    ],
+    assistant: "Got it — pushing to feature branch only, opening PR via gh.",
+    correction: {
+      category: "workflow",
+      title: "Always open a PR, never push to main directly",
+      body: "User explicitly said: don't push to main. Always feature branch + PR via gh.\n(matched: \"no\", \"don't\", \"instead\")",
+    },
+  },
+  {
+    prompt: "use ruff for linting, drop black",
+    candidates: [
+      { slug: "typer-over-click",  score: 0.31, chosen: true  },
+      { slug: "uv-not-pip",        score: 0.27, chosen: true  },
+      { slug: "always-pytest",     score: 0.22, chosen: false },
+    ],
+    assistant: "Removing black, configuring ruff (lint + format) in pyproject.toml.",
+    correction: {
+      category: "tool-choices",
+      title: "Use ruff for linting, drop black",
+      body: "User: \"use ruff for linting, drop black\".\n(matched: \"use\", \"drop\")",
+    },
+  },
+];
+
+// ----------------------------------------------------------------------
+// Renderers
+// ----------------------------------------------------------------------
+const term     = document.getElementById("term");
+const overlay  = document.getElementById("overlay");
+const briefEl  = document.getElementById("brief-list");
+const playBtn  = document.getElementById("play");
+const stepBtn  = document.getElementById("step");
+const resetBtn = document.getElementById("reset");
+const scrub    = document.getElementById("scrub");
+const stepLbl  = document.getElementById("step-label");
+const silentToggle = document.getElementById("silent-toggle");
+
+let cursor = -1;
+let playing = false;
+let timer = null;
+
+scrub.max = script.length;
+
+function renderTerm(upTo) {
+  term.innerHTML = "";
+  for (let i = 0; i <= upTo && i < script.length; i++) {
+    const t = script[i];
+    const block = document.createElement("div");
+    block.style.marginBottom = "14px";
+    block.innerHTML =
+      `<div class="meta">— turn ${i + 1} —</div>` +
+      `<div><span class="prompt">›</span> <span class="user">${escapeHtml(t.prompt)}</span></div>` +
+      `<div class="assist" style="margin-top:6px">${escapeHtml(t.assistant)}</div>`;
+    term.appendChild(block);
+  }
+  if (upTo < 0) {
+    term.innerHTML = `<div class="meta">waiting for first prompt…</div><div><span class="prompt">›</span> <span class="user cursor"></span></div>`;
+  }
+  term.scrollTop = term.scrollHeight;
+}
+
+function renderOverlay(upTo) {
+  overlay.innerHTML = "";
+  if (upTo < 0) {
+    overlay.innerHTML = `<div class="empty">no prompt yet — shed is idle</div>`;
+    return;
+  }
+  const t = script[upTo];
+
+  // Candidates
+  const h = document.createElement("h3");
+  h.textContent = "memory candidates (cosine, top-k)";
+  overlay.appendChild(h);
+  for (const c of t.candidates) {
+    const m = memories[c.slug] || { title: c.slug, category: "?" };
+    const row = document.createElement("div");
+    row.className = "candidate silent-only" + (c.chosen ? " chosen" : " skipped");
+    row.innerHTML = `
+      <div class="slug">${m.title} <span style="color:var(--text-faint)">· ${m.category}</span></div>
+      <div class="score">${c.score.toFixed(3)}</div>
+      <div class="badge">${c.chosen ? "injected" : "skip"}</div>`;
+    overlay.appendChild(row);
+  }
+
+  // Assembled context block
+  const chosen = t.candidates.filter((c) => c.chosen);
+  if (chosen.length) {
+    const h2 = document.createElement("h3");
+    h2.textContent = "<shed-context> prepended to prompt";
+    overlay.appendChild(h2);
+    let body = `<span class="tag">&lt;shed-context&gt;</span>\n`;
+    for (const c of chosen) {
+      const m = memories[c.slug];
+      body += `\n## ${escapeHtml(m.title)} (${m.category})\n${escapeHtml(m.body)}\n`;
+    }
+    body += `<span class="tag">&lt;/shed-context&gt;</span>`;
+    const blk = document.createElement("div");
+    blk.className = "ctx-block silent-only";
+    blk.innerHTML = body;
+    overlay.appendChild(blk);
+  }
+
+  // Lesson detected
+  if (t.correction) {
+    const h3 = document.createElement("h3");
+    h3.textContent = "correction detected → proposal queued";
+    overlay.appendChild(h3);
+    const lsn = document.createElement("div");
+    lsn.className = "lesson silent-only";
+    lsn.innerHTML = `
+      <div class="head"><span>lesson · ${t.correction.category}</span><span>queued</span></div>
+      <div class="body"><b>${escapeHtml(t.correction.title)}</b>\n\n${escapeHtml(t.correction.body)}</div>`;
+    overlay.appendChild(lsn);
+  }
+}
+
+function renderBrief(upTo) {
+  briefEl.innerHTML = "";
+  const proposals = [];
+  for (let i = 0; i <= upTo && i < script.length; i++) {
+    if (script[i].correction) proposals.push(script[i].correction);
+  }
+  if (!proposals.length) {
+    briefEl.innerHTML = `<div class="empty" style="font-family:var(--mono);font-size:12.5px">No proposals queued yet. Run through the script to see them appear.</div>`;
+    return;
+  }
+  for (const p of proposals) {
+    const row = document.createElement("div");
+    row.className = "brief-item";
+    row.innerHTML = `
+      <span class="cat">${p.category}</span>
+      <span class="title">${escapeHtml(p.title)}</span>
+      <span class="keys"><b>y</b>es <b>n</b>o <b>e</b>dit <b>p</b>in</span>`;
+    briefEl.appendChild(row);
+  }
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, (m) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"})[m]);
+}
+
+function setCursor(c) {
+  cursor = Math.max(-1, Math.min(script.length - 1, c));
+  scrub.value = cursor + 1;
+  stepLbl.textContent = `${cursor + 1} / ${script.length}`;
+  renderTerm(cursor);
+  renderOverlay(cursor);
+  renderBrief(cursor);
+}
+
+function step() {
+  if (cursor < script.length - 1) setCursor(cursor + 1);
+  else { stop(); }
+}
+
+function play() {
+  if (cursor >= script.length - 1) setCursor(-1);
+  playing = true;
+  playBtn.textContent = "⏸ pause";
+  timer = setInterval(step, 2200);
+}
+
+function stop() {
+  playing = false;
+  playBtn.textContent = "▶ play";
+  if (timer) { clearInterval(timer); timer = null; }
+}
+
+playBtn.addEventListener("click", () => playing ? stop() : play());
+stepBtn.addEventListener("click", () => { stop(); step(); });
+resetBtn.addEventListener("click", () => { stop(); setCursor(-1); });
+scrub.addEventListener("input", (e) => { stop(); setCursor(parseInt(e.target.value, 10) - 1); });
+silentToggle.addEventListener("change", (e) => {
+  document.body.classList.toggle("show-silent", e.target.checked);
+});
+
+setCursor(-1);
+</script>
+</body>
+</html>

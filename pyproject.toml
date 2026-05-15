@@ -1,0 +1,70 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "shed"
+version = "0.1.0"
+description = "Claude Code that learns you. Silent memory injection, self-updating CLAUDE.md, self-grooming notes."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Tarun", email = "tarunsp23@gmail.com" }]
+keywords = ["claude-code", "memory", "embeddings", "agents", "hooks"]
+classifiers = [
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Operating System :: MacOS",
+  "Operating System :: POSIX :: Linux",
+  "Topic :: Software Development",
+]
+
+dependencies = [
+  "typer>=0.12",
+  "rich>=13.7",
+  "pydantic>=2.6",
+  "tomli-w>=1.0",
+  "python-frontmatter>=1.1",
+  "jinja2>=3.1",
+  "numpy>=1.26",
+  "pyarrow>=15.0",
+  "sentence-transformers>=2.7",
+]
+
+[project.optional-dependencies]
+faiss = ["faiss-cpu>=1.8"]
+dev = [
+  "pytest>=8.0",
+  "pytest-cov>=5.0",
+  "ruff>=0.4",
+]
+
+[project.scripts]
+shed = "shed.cli:app"
+
+[project.urls]
+Homepage = "https://casterlygit.github.io/shed/"
+Repository = "https://github.com/CasterlyGit/shed"
+Issues = "https://github.com/CasterlyGit/shed/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/shed"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/shed/hooks/inject.sh.j2" = "shed/hooks/inject.sh.j2"
+"src/shed/hooks/observe.sh.j2" = "shed/hooks/observe.sh.j2"
+"src/shed/hooks/reflect.sh.j2" = "shed/hooks/reflect.sh.j2"
+"src/shed/hooks/brief.sh.j2" = "shed/hooks/brief.sh.j2"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501"]
