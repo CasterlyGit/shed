@@ -63,16 +63,34 @@ def run_doctor(console: Console | None = None) -> tuple[int, list[Check]]:
     git_ok = (sh / ".git").exists()
     checks.append(Check("git_repo", git_ok, str(sh / ".git")))
 
-    # embedding model importable
+    # embedder backend
     try:
-        import sentence_transformers  # noqa: F401
+        from shed.embeddings import (
+            _onnx_model_dir,
+            get_embedder,
+            onnx_model_files_present,
+        )
 
-        st_ok = True
-        st_detail = "sentence-transformers importable"
+        emb = get_embedder()
+        backend = emb.backend_name()
+        if backend == "onnx":
+            mdir = _onnx_model_dir()
+            size_mb = sum(p.stat().st_size for p in mdir.rglob("*") if p.is_file()) // (1024 * 1024)
+            embedder_detail = f"onnx ({size_mb}MB cached at {mdir})"
+            embedder_ok = True
+        elif backend == "sentence-transformers":
+            embedder_detail = "sentence-transformers (torch backend)"
+            embedder_ok = True
+        else:
+            if not onnx_model_files_present():
+                embedder_detail = "hash fallback — run `shed init --download-model` for real semantic search"
+            else:
+                embedder_detail = "hash fallback (onnx + torch both unavailable)"
+            embedder_ok = False
     except Exception as e:
-        st_ok = False
-        st_detail = f"falling back to hash embedder: {e}"
-    checks.append(Check("embedder", st_ok, st_detail))
+        embedder_ok = False
+        embedder_detail = f"embedder error: {e}"
+    checks.append(Check("embedder", embedder_ok, embedder_detail))
 
     # memory roots populated
     roots = memory_roots()

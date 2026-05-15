@@ -4,4 +4,4 @@ A self-updating shadow layer for Claude Code: silent memory injection,
 correction-driven proposals, and a self-grooming notes archive.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

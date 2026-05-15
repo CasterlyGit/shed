@@ -1,17 +1,33 @@
 """Embedding index over memory files.
 
-Default model: ``BAAI/bge-small-en-v1.5`` via sentence-transformers. We persist
-the index to ``~/.shed/index/embeddings.parquet`` keyed by stable id + content
-hash so we only re-embed memories that actually changed.
+Three backends, picked in priority order:
 
-For test/CI use we expose a ``HashEmbedder`` fallback that requires no model
-download — selected automatically when ``SHED_EMBEDDER=hash``.
+1. **ONNX** (preferred) — onnxruntime + bge-small-en-v1.5 ONNX model.
+   Real semantic embeddings, ~150ms/query on CPU, no torch dep.
+   Works on Intel Mac, Apple Silicon, Linux.
+
+2. **sentence-transformers** — kept for users with working torch >= 2.4.
+   Detected by trying to import + run.
+
+3. **HashEmbedder** — last-resort fallback. Bag-of-tokens, deterministic,
+   no deps. Used in tests and when ONNX/torch are unavailable.
+
+Persisted to ``~/.shed/index/embeddings.parquet`` keyed by stable id +
+content hash so we only re-embed memories that actually changed.
+
+Selection precedence:
+- ``SHED_EMBEDDER=hash`` forces hash
+- ``SHED_EMBEDDER=onnx`` forces onnx (errors if model not downloaded)
+- ``SHED_EMBEDDER=st`` forces sentence-transformers
+- otherwise: try onnx, then st, then hash
 """
 
 from __future__ import annotations
 
 import hashlib
 import os
+import urllib.error
+import urllib.request
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Protocol
@@ -23,23 +39,35 @@ from shed.memory import Memory
 
 _INDEX_FILE = "embeddings.parquet"
 
+# bge-small-en-v1.5 ONNX export (Xenova mirror — well-maintained, stable URLs)
+_ONNX_MODEL = "BAAI/bge-small-en-v1.5"
+_ONNX_HF_REPO = "Xenova/bge-small-en-v1.5"
+_ONNX_FILES = {
+    "model": "onnx/model_quantized.onnx",  # ~33MB quantized
+    "tokenizer": "tokenizer.json",
+    "tokenizer_config": "tokenizer_config.json",
+    "config": "config.json",
+}
+_HF_BASE = "https://huggingface.co"
+
 
 class Embedder(Protocol):
     dim: int
 
     def encode(self, texts: list[str]) -> np.ndarray: ...
 
+    def backend_name(self) -> str: ...
+
 
 # ---------------------------------------------------------------------------
-# Hash embedder — deterministic, no deps, used in tests.
+# Hash embedder — deterministic, no deps, fallback only.
 # ---------------------------------------------------------------------------
 
 
 class HashEmbedder:
     """Bag-of-tokens hashed into a fixed-dim vector. Cosine works.
 
-    Surprisingly OK for v0.1 demos and lets the test suite run with no
-    network or model cache.
+    Last-resort fallback when no real embedder is available.
     """
 
     def __init__(self, dim: int = 256):
@@ -51,10 +79,12 @@ class HashEmbedder:
             for tok in _tokens(t):
                 h = int(hashlib.md5(tok.encode()).hexdigest(), 16)
                 out[i, h % self.dim] += 1.0
-        # L2 normalize so dot product == cosine similarity.
         norms = np.linalg.norm(out, axis=1, keepdims=True)
         norms[norms == 0] = 1.0
         return out / norms
+
+    def backend_name(self) -> str:
+        return "hash"
 
 
 def _tokens(text: str) -> list[str]:
@@ -62,12 +92,147 @@ def _tokens(text: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# sentence-transformers wrapper.
+# ONNX embedder — bge-small via onnxruntime + tokenizers. The default.
+# ---------------------------------------------------------------------------
+
+
+def _onnx_model_dir() -> Path:
+    return Path.home() / ".cache" / "shed" / "models" / "bge-small-en-v1.5"
+
+
+def onnx_model_files_present() -> bool:
+    d = _onnx_model_dir()
+    return all((d / fname).exists() for fname in _ONNX_FILES.values())
+
+
+def _http_download(url: str, target: Path) -> None:
+    """Download a URL to a file, following redirects (HF uses LFS redirects).
+
+    Streams in chunks so large files don't hit memory.
+    """
+    req = urllib.request.Request(url, headers={"User-Agent": "shed/0.2"})
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        # urllib follows 301/302 by default but HF uses 307 → LFS host. Manually handle.
+        if resp.status in (301, 302, 303, 307, 308):
+            location = resp.headers.get("Location")
+            if not location:
+                raise RuntimeError(f"redirect with no Location header: {url}")
+            return _http_download(location, target)
+        tmp = target.with_suffix(target.suffix + ".part")
+        with open(tmp, "wb") as f:
+            while True:
+                chunk = resp.read(64 * 1024)
+                if not chunk:
+                    break
+                f.write(chunk)
+        # Atomic rename so a crashed download never leaves a half-file as the real one.
+        tmp.replace(target)
+
+
+def download_onnx_model(progress: bool = True) -> Path:
+    """Download the ONNX model files into ~/.cache/shed/models/.
+
+    Uses urllib + chunked streaming (no extra deps). Returns the model directory.
+    Raises on failure so caller can fall through.
+    """
+    d = _onnx_model_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    for fname in _ONNX_FILES.values():
+        target = d / fname
+        if target.exists() and target.stat().st_size > 1024:
+            # Existing non-trivially-sized file is good enough.
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        url = f"{_HF_BASE}/{_ONNX_HF_REPO}/resolve/main/{fname}?download=true"
+        if progress:
+            try:
+                from rich.console import Console
+
+                Console().print(f"[dim]downloading {fname}[/dim]")
+            except Exception:
+                pass
+        try:
+            _http_download(url, target)
+        except (urllib.error.URLError, OSError) as e:
+            # Clean up partial files so retry doesn't see them as "good enough"
+            for stale in [target, target.with_suffix(target.suffix + ".part")]:
+                if stale.exists():
+                    stale.unlink()
+            raise RuntimeError(f"failed to download {url}: {e}") from e
+    return d
+
+
+class ONNXEmbedder:
+    """bge-small-en-v1.5 via onnxruntime (CPU). Fast + portable."""
+
+    def __init__(self):
+        if not onnx_model_files_present():
+            download_onnx_model(progress=True)
+        d = _onnx_model_dir()
+
+        import onnxruntime as ort
+        from tokenizers import Tokenizer
+
+        sess_opts = ort.SessionOptions()
+        sess_opts.intra_op_num_threads = max(1, (os.cpu_count() or 4) // 2)
+        sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        self._session = ort.InferenceSession(
+            str(d / _ONNX_FILES["model"]),
+            sess_opts,
+            providers=["CPUExecutionProvider"],
+        )
+        self._tokenizer = Tokenizer.from_file(str(d / _ONNX_FILES["tokenizer"]))
+        # Pad on the right with [PAD] (id=0 for bge); truncate at 512.
+        self._tokenizer.enable_padding(pad_id=0, pad_token="[PAD]", direction="right")
+        self._tokenizer.enable_truncation(max_length=512)
+
+        # bge-small embedding dim is 384.
+        self.dim = 384
+
+    def encode(self, texts: list[str]) -> np.ndarray:
+        if not texts:
+            return np.zeros((0, self.dim), dtype=np.float32)
+        # Add the bge query/passage prefix? bge-small expects no special prefix
+        # for symmetric similarity in the small variant. Skip.
+        encs = self._tokenizer.encode_batch(texts)
+        input_ids = np.array([e.ids for e in encs], dtype=np.int64)
+        attn_mask = np.array([e.attention_mask for e in encs], dtype=np.int64)
+        token_type_ids = np.zeros_like(input_ids)
+
+        # The Xenova export uses these standard input names.
+        ort_inputs = {
+            "input_ids": input_ids,
+            "attention_mask": attn_mask,
+            "token_type_ids": token_type_ids,
+        }
+        # Filter to inputs the model actually expects (some exports skip token_type_ids).
+        expected = {i.name for i in self._session.get_inputs()}
+        ort_inputs = {k: v for k, v in ort_inputs.items() if k in expected}
+
+        outputs = self._session.run(None, ort_inputs)
+        # Output is last_hidden_state [batch, seq, hidden]. Mean-pool with mask.
+        last_hidden = outputs[0]
+        mask = attn_mask.astype(np.float32)[..., None]
+        summed = (last_hidden * mask).sum(axis=1)
+        counts = mask.sum(axis=1).clip(min=1e-9)
+        pooled = summed / counts
+
+        # L2 normalize so dot product == cosine similarity.
+        norms = np.linalg.norm(pooled, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        return (pooled / norms).astype(np.float32)
+
+    def backend_name(self) -> str:
+        return "onnx"
+
+
+# ---------------------------------------------------------------------------
+# sentence-transformers wrapper — kept for systems with working torch.
 # ---------------------------------------------------------------------------
 
 
 class STEmbedder:
-    def __init__(self, model_name: str = "BAAI/bge-small-en-v1.5"):
+    def __init__(self, model_name: str = _ONNX_MODEL):
         from sentence_transformers import SentenceTransformer
 
         self._model = SentenceTransformer(model_name)
@@ -79,19 +244,34 @@ class STEmbedder:
         )
         return vecs.astype(np.float32)
 
+    def backend_name(self) -> str:
+        return "sentence-transformers"
 
-def get_embedder(model_name: str = "BAAI/bge-small-en-v1.5") -> Embedder:
-    """Pick an embedder. ``SHED_EMBEDDER=hash`` forces the hash fallback.
 
-    Falls back to hash automatically if sentence-transformers isn't importable
-    so ``shed why`` and the demo still work on a fresh machine.
-    """
+# ---------------------------------------------------------------------------
+# Selection
+# ---------------------------------------------------------------------------
+
+
+def get_embedder(model_name: str = _ONNX_MODEL) -> Embedder:
+    """Pick the best available embedder. See module docstring for selection rules."""
     forced = os.environ.get("SHED_EMBEDDER", "").lower()
     if forced == "hash":
         return HashEmbedder()
+    if forced == "onnx":
+        return ONNXEmbedder()
     if forced == "st":
         return STEmbedder(model_name)
+
+    # Auto-select: prefer ONNX, then ST (only if torch is actually working), then hash.
     try:
+        return ONNXEmbedder()
+    except Exception:
+        pass
+    try:
+        # Validate torch actually loads, not just sentence-transformers.
+        import torch  # noqa: F401
+
         return STEmbedder(model_name)
     except Exception:
         return HashEmbedder()
@@ -138,7 +318,13 @@ class Index:
         self.hashes = list(d.get("content_hash", []))
         vecs = d.get("vector", [])
         if vecs:
-            self.vectors = np.array(vecs, dtype=np.float32)
+            loaded = np.array(vecs, dtype=np.float32)
+            # Re-embed if dim changed (switched embedder backends).
+            if loaded.shape[1] != self.embedder.dim:
+                self.ids, self.slugs, self.paths, self.hashes = [], [], [], []
+                self.vectors = np.zeros((0, self.embedder.dim), dtype=np.float32)
+            else:
+                self.vectors = loaded
         else:
             self.vectors = np.zeros((0, self.embedder.dim), dtype=np.float32)
 
@@ -224,7 +410,6 @@ class Index:
         if not self.ids:
             return []
         q = self.embedder.encode([query])[0]
-        # Vectors are L2-normalized so dot == cosine.
         scores = self.vectors @ q
         order = np.argsort(-scores)[:top_k]
         return [(self.ids[i], self.slugs[i], float(scores[i])) for i in order]

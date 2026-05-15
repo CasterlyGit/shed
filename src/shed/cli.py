@@ -58,8 +58,22 @@ def _root(
 @app.command()
 def init(
     force: bool = typer.Option(False, "--force", help="overwrite config + allowlist"),
+    download_model: bool = typer.Option(
+        True, "--download-model/--no-download-model", help="pre-download ONNX embedder model"
+    ),
 ) -> None:
     """Install hooks, create ~/.shed/, build initial embedding index."""
+    if download_model:
+        from shed.embeddings import download_onnx_model, onnx_model_files_present
+
+        if not onnx_model_files_present():
+            console.print("[dim]downloading ONNX embedder model (~33MB, one-time)…[/dim]")
+            try:
+                download_onnx_model(progress=True)
+                console.print("[green]model downloaded[/green]")
+            except Exception as e:
+                console.print(f"[yellow]model download failed: {e}[/yellow]")
+                console.print("[yellow]continuing with hash fallback — re-run with internet later[/yellow]")
     rep = install_hooks(force=force)
     console.print(
         Panel(
