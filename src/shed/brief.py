@@ -167,6 +167,7 @@ def walk_brief(console: Console | None = None) -> None:
 
 
 def _accept(pp: PendingProposal, console: Console, pin: bool) -> None:
+    _log_decision(pp, "accept")
     if pp.kind == "permit":
         from shed.permit import apply_proposal
 
@@ -201,9 +202,32 @@ def _accept(pp: PendingProposal, console: Console, pin: bool) -> None:
 
 
 def _reject(pp: PendingProposal, console: Console) -> None:
+    _log_decision(pp, "reject")
     pp.path.unlink(missing_ok=True)
     _changelog(f"rejected: {pp.path.name}")
     console.print(f"[red]rejected[/red] {pp.path.name}")
+
+
+def _log_decision(pp: PendingProposal, decision: str) -> None:
+    """Feed the L5 self-tuning loop."""
+    try:
+        from shed.thresholds import log_feedback
+
+        confidence = _extract_confidence(pp.body) or 0.5
+        kind = pp.kind or "lesson"
+        log_feedback(kind, confidence, decision)
+    except Exception:
+        pass
+
+
+def _extract_confidence(body: str) -> float | None:
+    for line in body.splitlines():
+        if line.startswith("confidence:"):
+            try:
+                return float(line.split(":", 1)[1].strip())
+            except Exception:
+                return None
+    return None
 
 
 def _edit(pp: PendingProposal, console: Console) -> None:

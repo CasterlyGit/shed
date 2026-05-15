@@ -370,6 +370,145 @@ def sync_status() -> None:
 
 
 # ---------------------------------------------------------------------------
+# statusline
+# ---------------------------------------------------------------------------
+
+
+statusline_app = typer.Typer(help="claude code statusline indicator")
+app.add_typer(statusline_app, name="statusline")
+
+
+@statusline_app.command("show")
+def statusline_show() -> None:
+    """Print the rendered statusline (live, not cached)."""
+    from shed.statusline import render
+
+    console.print(render())
+
+
+@statusline_app.command("install")
+def statusline_install() -> None:
+    """Wire shed into ~/.claude/settings.json's statusLine field."""
+    from shed.config import claude_home, load_config, write_config
+    from shed.statusline import install_to_claude_settings, write_cache
+
+    cfg = load_config()
+    cfg.statusline.enabled = True
+    write_config(cfg)
+    write_cache()
+    settings = claude_home() / "settings.json"
+    changed = install_to_claude_settings(settings)
+    if changed:
+        console.print(f"[green]statusline installed[/green] → {settings}")
+    else:
+        console.print("[dim]statusline already wired[/dim]")
+
+
+@statusline_app.command("uninstall")
+def statusline_uninstall() -> None:
+    """Remove shed from settings.json statusLine; restores backup if present."""
+    from shed.config import claude_home, load_config, write_config
+    from shed.statusline import uninstall_from_claude_settings
+
+    cfg = load_config()
+    cfg.statusline.enabled = False
+    write_config(cfg)
+    settings = claude_home() / "settings.json"
+    changed = uninstall_from_claude_settings(settings)
+    if changed:
+        console.print("[yellow]statusline uninstalled[/yellow]")
+    else:
+        console.print("[dim]nothing to uninstall[/dim]")
+
+
+@statusline_app.command("refresh")
+def statusline_refresh() -> None:
+    """Force-refresh the cached statusline string."""
+    from shed.statusline import write_cache
+
+    p = write_cache()
+    console.print(f"[green]refreshed[/green] {p}")
+
+
+# ---------------------------------------------------------------------------
+# thresholds (L5)
+# ---------------------------------------------------------------------------
+
+
+thresholds_app = typer.Typer(help="self-tuning per-kind confidence thresholds")
+app.add_typer(thresholds_app, name="thresholds")
+
+
+@thresholds_app.command("show")
+def thresholds_show() -> None:
+    """Current per-kind tuned thresholds."""
+    from shed.thresholds import load_thresholds
+
+    t = load_thresholds()
+    if not t:
+        console.print("[dim]no tuned thresholds yet — using config defaults[/dim]")
+        return
+    table = Table(title="tuned thresholds (per-kind)")
+    table.add_column("kind")
+    table.add_column("threshold")
+    for k, v in sorted(t.items()):
+        table.add_row(k, f"{v:.2f}")
+    console.print(table)
+
+
+@thresholds_app.command("tune")
+def thresholds_tune() -> None:
+    """Recompute thresholds from accept/reject feedback log."""
+    from shed.thresholds import tune_all
+
+    reports = tune_all()
+    if not reports:
+        console.print("[dim]not enough feedback to tune (need 5+ decisions per kind)[/dim]")
+        return
+    table = Table(title="tuning reports")
+    table.add_column("kind")
+    table.add_column("new_threshold")
+    table.add_column("accept_rate", style="green")
+    table.add_column("n_decisions", style="dim")
+    for r in reports:
+        table.add_row(r.kind, f"{r.threshold:.2f}", f"{r.accept_rate:.2f}", str(r.accepts + r.rejects))
+    console.print(table)
+
+
+# ---------------------------------------------------------------------------
+# quality (L1)
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def quality(top: int = typer.Option(20, "--top", help="show top N memories by injection score")) -> None:
+    """Show per-memory injection quality scores (L1 closed-loop)."""
+    from shed.memory import discover
+    from shed.quality import compute_scores
+
+    scores = compute_scores()
+    if not scores:
+        console.print("[dim]no quality events logged yet — use Claude Code normally and shed will learn[/dim]")
+        return
+    by_id = {m.id: m for m in discover()}
+    rows = sorted(scores.values(), key=lambda q: q.injection_score, reverse=True)
+    table = Table(title=f"injection quality (top {top})")
+    table.add_column("score", style="cyan")
+    table.add_column("slug")
+    table.add_column("injected", style="dim")
+    table.add_column("cited", style="green")
+    for q in rows[:top]:
+        slug = by_id[q.memory_id].slug if q.memory_id in by_id else q.memory_id[:10]
+        table.add_row(
+            f"{q.injection_score:.2f}",
+            slug,
+            f"{q.injected_recent:.1f}",
+            f"{q.cited_recent:.1f}",
+        )
+    console.print(table)
+
+
+# ---------------------------------------------------------------------------
 # permit
 # ---------------------------------------------------------------------------
 

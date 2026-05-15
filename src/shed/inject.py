@@ -25,7 +25,9 @@ from shed.config import (
     state_dir,
 )
 from shed.embeddings import Index, get_embedder
-from shed.memory import Memory, discover, record_citation
+from shed.memory import Memory, discover
+from shed.quality import compute_scores
+from shed.quality import log_injection as log_quality_injection
 
 
 @dataclass
@@ -34,6 +36,8 @@ class Candidate:
     slug: str
     score: float
     chosen: bool
+    cosine: float = 0.0
+    quality: float = 0.5
 
 
 @dataclass
@@ -77,31 +81,48 @@ def inject_for_prompt(
     index.load()
     index.upsert(mems)
 
-    hits = index.search(prompt, top_k=max(cfg.inject.top_k * 2, cfg.inject.top_k))
+    # Pull a wider slate so quality re-ranking has room to move things.
+    raw_top_k = max(cfg.inject.top_k * 4, cfg.inject.top_k)
+    hits = index.search(prompt, top_k=raw_top_k)
+
+    # L1 closed-loop quality re-ranking.
+    qw = max(0.0, min(1.0, cfg.inject.quality_weight))
+    qscores = compute_scores(decay_days=cfg.inject.quality_decay_days)
 
     by_id = {m.id: m for m in mems}
+    blended: list[tuple[str, str, float, float, float]] = []  # (id, slug, final, cosine, quality)
+    for mid, slug, cosine in hits:
+        q = qscores[mid].injection_score if mid in qscores else 0.5
+        final = cosine * (1.0 - qw) + q * qw
+        blended.append((mid, slug, final, cosine, q))
+    # Re-sort by final blended score.
+    blended.sort(key=lambda r: r[2], reverse=True)
+
     candidates: list[Candidate] = []
     chosen: list[Memory] = []
-    for mid, slug, score in hits:
-        keep = score >= cfg.inject.min_score and len(chosen) < cfg.inject.top_k
-        candidates.append(Candidate(id=mid, slug=slug, score=score, chosen=keep))
+    for mid, slug, final, cosine, q in blended:
+        keep = final >= cfg.inject.min_score and len(chosen) < cfg.inject.top_k
+        candidates.append(
+            Candidate(id=mid, slug=slug, score=final, chosen=keep, cosine=cosine, quality=q)
+        )
         if keep and mid in by_id:
             chosen.append(by_id[mid])
 
     block = format_block(chosen, cfg.inject.max_chars_per_memory)
     elapsed_ms = (time.perf_counter() - start) * 1000.0
 
-    # Persist + cite + log
+    # Persist + log
     try:
         index.save()
     except Exception:
         pass
-    if mode != "explore":
-        for m in chosen:
-            try:
-                record_citation(m)
-            except Exception:
-                pass
+    if mode != "explore" and chosen:
+        # L1: log this as an INJECTION event (not a citation — that comes
+        # from Stop hook scanning the response).
+        try:
+            log_quality_injection([m.id for m in chosen])
+        except Exception:
+            pass
     if log:
         _log_injection(prompt, candidates, chosen, elapsed_ms)
 

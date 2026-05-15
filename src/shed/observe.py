@@ -42,6 +42,17 @@ CORRECTION_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"\b(I told you|I said|please don'?t)\b", re.I),
 ]
 
+# Patterns that *might* be corrections — too weak for the regex prefilter alone,
+# strong enough to escalate to the Haiku judge if it's enabled.
+AMBIGUOUS_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"\b(actually,|hmm|wait,|let'?s|maybe|or rather)\b", re.I),
+    re.compile(r"\b(would prefer|would rather|next time|going forward)\b", re.I),
+    re.compile(r"\b(why did you|why are you|why would)\b", re.I),
+]
+
+JUDGE_CALL_BUDGET_FILE = "haiku-judge-budget.json"
+JUDGE_DAILY_BUDGET = 100  # max calls per day to keep cost bounded
+
 
 @dataclass
 class CorrectionSignal:
@@ -74,6 +85,24 @@ def detect(text: str) -> CorrectionSignal | None:
     # Confidence: more independent pattern hits → higher confidence.
     conf = min(0.4 + 0.2 * len(matches), 1.0)
     return CorrectionSignal(text=text.strip(), confidence=conf, matches=matches)
+
+
+def detect_ambiguous(text: str) -> CorrectionSignal | None:
+    """Return a candidate signal for the Haiku judge to evaluate.
+
+    Returns None if the text doesn't trip any ambiguous pattern (so we don't
+    waste judge calls on obvious non-corrections).
+    """
+    if not text or not text.strip():
+        return None
+    matches: list[str] = []
+    for p in AMBIGUOUS_PATTERNS:
+        m = p.search(text)
+        if m:
+            matches.append(m.group(0))
+    if not matches:
+        return None
+    return CorrectionSignal(text=text.strip(), confidence=0.4, matches=matches)
 
 
 def observe_tool_use(
@@ -119,6 +148,22 @@ def observe_text(
         return None
 
     sig = detect(text)
+    if not sig and cfg.observe.use_haiku_judge:
+        # Try the ambiguous-pattern + Haiku-judge path.
+        amb = detect_ambiguous(text)
+        if amb is not None:
+            try:
+                from shed.judge import judge
+
+                verdict = judge(text, model=cfg.observe.haiku_model)
+                if verdict.is_correction and verdict.confidence >= 0.6:
+                    sig = CorrectionSignal(
+                        text=text.strip(),
+                        confidence=verdict.confidence,
+                        matches=amb.matches + [f"haiku:{verdict.rationale[:40]}"],
+                    )
+            except Exception:
+                pass
     if not sig:
         return None
 

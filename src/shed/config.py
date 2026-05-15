@@ -28,6 +28,11 @@ class InjectConfig(BaseModel):
     min_score: float = 0.25
     timeout_ms: int = 2000
     max_chars_per_memory: int = 1200
+    # L1 closed-loop quality ranking: weight on injection_score vs cosine.
+    # 0.0 = pure semantic, 1.0 = pure track-record. 0.3 default.
+    quality_weight: float = 0.3
+    # Days before quality events decay to half their weight.
+    quality_decay_days: float = 30.0
 
 
 class ObserveConfig(BaseModel):
@@ -52,6 +57,11 @@ class PrivacyConfig(BaseModel):
 class SyncConfig(BaseModel):
     enabled: bool = False
     remote: str = "git@github.com:CasterlyGit/shed-state-private.git"
+
+
+class StatuslineConfig(BaseModel):
+    enabled: bool = False  # opt-in: writing to ~/.claude/settings.json is intrusive
+    refresh_on_stop: bool = True
 
 
 class PermitsConfig(BaseModel):
@@ -80,6 +90,7 @@ class Config(BaseModel):
     privacy: PrivacyConfig = Field(default_factory=PrivacyConfig)
     sync: SyncConfig = Field(default_factory=SyncConfig)
     permits: PermitsConfig = Field(default_factory=PermitsConfig)
+    statusline: StatuslineConfig = Field(default_factory=StatuslineConfig)
     embedding_model: str = "BAAI/bge-small-en-v1.5"
 
 

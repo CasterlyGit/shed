@@ -54,6 +54,14 @@ def run_evolve(cfg: Config | None = None) -> EvolveReport:
     except Exception:
         pass
 
+    # L5: self-tune thresholds from feedback. Best-effort.
+    try:
+        from shed.thresholds import tune_all
+
+        tune_all()
+    except Exception:
+        pass
+
     report = EvolveReport(
         archived=[m.slug for m in archived],
         duplicates=[(a.slug, b.slug, s) for a, b, s in dups],
