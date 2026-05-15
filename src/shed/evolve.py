@@ -45,6 +45,15 @@ def run_evolve(cfg: Config | None = None) -> EvolveReport:
     for a, b, score in dups:
         proposals_written.append(_write_merge_proposal(a, b, score))
 
+    # Generate permit proposals (L3 loop). Best-effort.
+    try:
+        from shed.permit import generate_proposals as gen_permits
+
+        for pp in gen_permits(cfg=cfg):
+            proposals_written.append(pp.path)
+    except Exception:
+        pass
+
     report = EvolveReport(
         archived=[m.slug for m in archived],
         duplicates=[(a.slug, b.slug, s) for a, b, s in dups],

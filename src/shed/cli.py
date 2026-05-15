@@ -370,6 +370,112 @@ def sync_status() -> None:
 
 
 # ---------------------------------------------------------------------------
+# permit
+# ---------------------------------------------------------------------------
+
+
+permit_app = typer.Typer(help="learn permission-prompt patterns (L3 loop)")
+app.add_typer(permit_app, name="permit")
+
+
+@permit_app.command("list")
+def permit_list(top: int = typer.Option(20, "--top", help="how many patterns to show")) -> None:
+    """Top permit patterns by approval count."""
+    from shed.permit import is_blocked, load_approval_counts
+
+    counts = load_approval_counts()
+    if not counts:
+        console.print("[dim]no approvals logged yet — use Claude Code normally and shed will learn[/dim]")
+        return
+    rows = sorted(counts.items(), key=lambda kv: kv[1]["count"], reverse=True)
+    table = Table(title=f"approved permit patterns (top {top})")
+    table.add_column("count", style="cyan")
+    table.add_column("pattern")
+    table.add_column("sessions", style="dim")
+    table.add_column("status", style="yellow")
+    for pat, entry in rows[:top]:
+        status = "blocked" if is_blocked(pat) else "ok"
+        n_sessions = len(entry.get("sessions", []))
+        table.add_row(str(entry["count"]), pat, str(n_sessions), status)
+    console.print(table)
+
+
+@permit_app.command("suggest")
+def permit_suggest(
+    threshold: int = typer.Option(None, "--threshold", help="override default threshold"),
+) -> None:
+    """Show what would be proposed at current threshold."""
+    from shed.permit import suggest
+
+    rows = suggest(threshold=threshold)
+    if not rows:
+        cfg_t = threshold if threshold is not None else load_config().permits.threshold
+        console.print(f"[dim]no candidates above threshold ({cfg_t})[/dim]")
+        return
+    table = Table(title=f"would propose (threshold={threshold or load_config().permits.threshold})")
+    table.add_column("pattern")
+    table.add_column("count")
+    table.add_column("confidence")
+    for r in rows:
+        table.add_row(r["pattern"], str(r["count"]), f"{r['confidence']:.2f}")
+    console.print(table)
+
+
+@permit_app.command("log")
+def permit_log(n: int = typer.Option(30, "-n", help="how many recent entries")) -> None:
+    """Recent approved tool calls."""
+    p = state_dir() / "permits-approved.jsonl"
+    if not p.exists():
+        console.print("[dim]no permit approvals logged yet[/dim]")
+        return
+    lines = p.read_text().splitlines()[-n:]
+    table = Table(title=f"last {len(lines)} approvals")
+    table.add_column("time", style="dim")
+    table.add_column("tool")
+    table.add_column("pattern")
+    import datetime as _dt
+
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except Exception:
+            continue
+        when = _dt.datetime.fromtimestamp(row["ts"]).strftime("%m-%d %H:%M:%S")
+        table.add_row(when, row.get("tool_name", "?"), row.get("canonical", "?"))
+    console.print(table)
+
+
+@permit_app.command("threshold")
+def permit_threshold(
+    n: int = typer.Argument(None, help="new threshold value (omit to show)"),
+) -> None:
+    """Show or set the approval threshold."""
+    cfg = load_config()
+    if n is None:
+        console.print(f"current threshold: [bold]{cfg.permits.threshold}[/bold]")
+        return
+    if n < 1:
+        console.print("[red]threshold must be >= 1[/red]")
+        raise typer.Exit(1)
+    cfg.permits.threshold = n
+    write_config(cfg)
+    console.print(f"threshold set: [bold]{n}[/bold]")
+
+
+@permit_app.command("scan")
+def permit_scan() -> None:
+    """Manually run the proposal generator (also runs at evolve)."""
+    from shed.permit import generate_proposals
+
+    written = generate_proposals()
+    if not written:
+        console.print("[dim]nothing new to propose[/dim]")
+        return
+    for p in written:
+        console.print(f"[green]proposed[/green] {p.pattern} (×{p.count}) -> {p.path.name}")
+
+
+# ---------------------------------------------------------------------------
 # doctor
 # ---------------------------------------------------------------------------
 

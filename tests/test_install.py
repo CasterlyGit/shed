@@ -8,8 +8,8 @@ from shed.hooks.install import install
 
 def test_install_writes_hooks_and_settings():
     rep = install()
-    # Four hook scripts created and executable.
-    assert len(rep.hooks_written) == 4
+    # Five hook scripts created and executable (v0.2 added permit_observe).
+    assert len(rep.hooks_written) == 5
     for p in rep.hooks_written:
         assert p.exists()
         assert p.stat().st_mode & 0o111

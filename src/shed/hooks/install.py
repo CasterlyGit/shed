@@ -41,6 +41,7 @@ HOOK_EVENTS = {
     "observe.sh": "PostToolUse",
     "reflect.sh": "Stop",
     "brief.sh": "SessionStart",
+    "permit_observe.sh": "PreToolUse",
 }
 
 
@@ -92,6 +93,7 @@ def _render_hooks() -> list[Path]:
         ("observe.sh.j2", "observe.sh"),
         ("reflect.sh.j2", "reflect.sh"),
         ("brief.sh.j2", "brief.sh"),
+        ("permit_observe.sh.j2", "permit_observe.sh"),
     ):
         tmpl_path = _template_dir() / tmpl_name
         text = Template(tmpl_path.read_text()).render(python=python, log_file=str(log_file))

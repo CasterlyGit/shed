@@ -6,8 +6,6 @@ first run. Skip with ``pytest -m "not slow"``.
 
 from __future__ import annotations
 
-import os
-
 import numpy as np
 import pytest
 

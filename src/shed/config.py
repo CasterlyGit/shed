@@ -54,6 +54,23 @@ class SyncConfig(BaseModel):
     remote: str = "git@github.com:CasterlyGit/shed-state-private.git"
 
 
+class PermitsConfig(BaseModel):
+    """Permission-pattern learning (the L3 loop). See ``shed.permit``."""
+
+    enabled: bool = True
+    threshold: int = 3
+    # Hard-blocked patterns: never proposed even if approved many times.
+    # The hardcoded list lives in shed.permit.BLOCKLIST_PATTERNS;
+    # this list is for user additions.
+    extra_blocklist: list[str] = Field(default_factory=list)
+    # Directories under which Read/Edit/Write patterns are valid candidates.
+    # Empty list means "use the defaults baked into shed.permit".
+    allowlist_dirs: list[str] = Field(default_factory=list)
+    # Per-pattern auto-apply: patterns matching these prefixes auto-apply
+    # once threshold is reached. Default empty — manual approve in v0.2.
+    auto_apply_prefixes: list[str] = Field(default_factory=list)
+
+
 class Config(BaseModel):
     auto_apply: bool = False
     categories: list[str] = Field(default_factory=lambda: list(DEFAULT_CATEGORIES))
@@ -62,6 +79,7 @@ class Config(BaseModel):
     evolve: EvolveConfig = Field(default_factory=EvolveConfig)
     privacy: PrivacyConfig = Field(default_factory=PrivacyConfig)
     sync: SyncConfig = Field(default_factory=SyncConfig)
+    permits: PermitsConfig = Field(default_factory=PermitsConfig)
     embedding_model: str = "BAAI/bge-small-en-v1.5"
 
 

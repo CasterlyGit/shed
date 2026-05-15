@@ -35,10 +35,21 @@ class PendingProposal:
     title: str
     category: str | None
     body: str
+    kind: str = "lesson"  # "lesson" | "permit"
+    pattern: str | None = None  # for permits
 
     @classmethod
     def from_path(cls, path: Path) -> PendingProposal:
         text = path.read_text()
+        kind = _extract_yaml(text, "kind") or ("permit" if path.name.startswith("permit-") else "lesson")
+        if kind == "permit":
+            pattern = _extract_yaml(text, "pattern")
+            count = _extract_yaml(text, "count") or "?"
+            title = f"permit: {pattern} (×{count})" if pattern else path.stem
+            return cls(
+                path=path, title=title, category="permission",
+                body=text, kind="permit", pattern=pattern,
+            )
         category = _extract(text, "category:")
         title = _first_heading(text) or path.stem
         return cls(path=path, title=title, category=category, body=text)
@@ -76,14 +87,28 @@ def render_brief(console: Console | None = None) -> str:
         console.print("[dim]No pending proposals. You're caught up.[/dim]")
         return console.export_text()
 
-    table = Table(title="Pending proposals", show_lines=False)
-    table.add_column("#", style="cyan", width=3)
-    table.add_column("category", style="yellow")
-    table.add_column("title")
-    table.add_column("file", style="dim")
-    for i, pp in enumerate(pending[:10], 1):
-        table.add_row(str(i), pp.category or "?", pp.title[:60], pp.path.name)
-    console.print(table)
+    permits = [p for p in pending if p.kind == "permit"]
+    lessons = [p for p in pending if p.kind != "permit"]
+
+    if permits:
+        ptable = Table(title="Permission proposals", show_lines=False, border_style="cyan")
+        ptable.add_column("#", style="cyan", width=3)
+        ptable.add_column("pattern")
+        ptable.add_column("file", style="dim")
+        for i, pp in enumerate(permits[:10], 1):
+            ptable.add_row(str(i), pp.pattern or pp.title[:60], pp.path.name)
+        console.print(ptable)
+
+    if lessons:
+        table = Table(title="Lesson proposals", show_lines=False)
+        table.add_column("#", style="cyan", width=3)
+        table.add_column("category", style="yellow")
+        table.add_column("title")
+        table.add_column("file", style="dim")
+        for i, pp in enumerate(lessons[:10], 1):
+            table.add_row(str(i), pp.category or "?", pp.title[:60], pp.path.name)
+        console.print(table)
+
     console.print(
         f"\nRun [bold]shed brief[/bold] to walk through them ({ACTIONS}).",
     )
@@ -142,6 +167,18 @@ def walk_brief(console: Console | None = None) -> None:
 
 
 def _accept(pp: PendingProposal, console: Console, pin: bool) -> None:
+    if pp.kind == "permit":
+        from shed.permit import apply_proposal
+
+        ok, msg = apply_proposal(pp.path)
+        if ok:
+            pp.path.unlink(missing_ok=True)
+            _changelog(f"permit accepted: {pp.pattern} ({msg})")
+            console.print(f"[green]permit applied[/green] {msg}")
+        else:
+            console.print(f"[red]permit failed:[/red] {msg}")
+        return
+
     target_root = _accept_root()
     target_root.mkdir(parents=True, exist_ok=True)
     slug = slugify(pp.title)
@@ -204,6 +241,24 @@ def _extract(text: str, key: str) -> str | None:
     for line in text.splitlines():
         if line.startswith(key):
             return line[len(key):].strip()
+    return None
+
+
+def _extract_yaml(text: str, key: str) -> str | None:
+    """Read a top-level YAML frontmatter key. Tolerant of files without
+    frontmatter."""
+    in_fm = False
+    for line in text.splitlines():
+        s = line.strip()
+        if s == "---":
+            if not in_fm:
+                in_fm = True
+                continue
+            return None  # closed without finding key
+        if in_fm and ":" in line:
+            k, _, v = line.partition(":")
+            if k.strip() == key:
+                return v.strip()
     return None
 
 

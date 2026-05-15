@@ -58,6 +58,7 @@ packages = ["src/shed"]
 "src/shed/hooks/observe.sh.j2" = "shed/hooks/observe.sh.j2"
 "src/shed/hooks/reflect.sh.j2" = "shed/hooks/reflect.sh.j2"
 "src/shed/hooks/brief.sh.j2" = "shed/hooks/brief.sh.j2"
+"src/shed/hooks/permit_observe.sh.j2" = "shed/hooks/permit_observe.sh.j2"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

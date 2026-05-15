@@ -76,6 +76,34 @@ def detect(text: str) -> CorrectionSignal | None:
     return CorrectionSignal(text=text.strip(), confidence=conf, matches=matches)
 
 
+def observe_tool_use(
+    tool_name: str,
+    args: dict | None,
+    session_id: str | None = None,
+    cfg: Config | None = None,
+) -> bool:
+    """Cross-reference a PostToolUse against permits-pending → record approval.
+
+    Called by the PostToolUse hook before correction detection. Returns True
+    if an approval was recorded (matched a recent PreToolUse).
+    """
+    cfg = cfg or load_config()
+    if is_globally_disabled():
+        return False
+    if current_mode() == "private":
+        return False
+    if not cfg.permits.enabled:
+        return False
+    if not tool_name:
+        return False
+    try:
+        from shed.permit import record_approval
+
+        return record_approval(tool_name, args or {}, session_id=session_id)
+    except Exception:
+        return False
+
+
 def observe_text(
     text: str,
     cfg: Config | None = None,

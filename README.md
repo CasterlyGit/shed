@@ -2,7 +2,7 @@
 
 > Claude Code that learns you. A silent shadow layer that picks the right notes from your past, watches for corrections, and grooms its own memory.
 
-**Status:** v0.1 — first public cut. Local-only by default, every proposal manually approved, single command to install.
+**Status:** v0.2 — fast embedder + permission-pattern learning. Local-only by default, every proposal manually approved, single command to install.
 
 ---
 
@@ -10,11 +10,12 @@
 
 You tell Claude the same things over and over. *"Use uv, not pip." "Squash-merge, delete the branch." "Don't push without running pytest."* Then a week later you're saying it again. The agent has the memory of a goldfish.
 
-`shed` is the layer in between. It runs as a set of Claude Code hooks and silently does three things:
+`shed` is the layer in between. It runs as a set of Claude Code hooks and silently does four things:
 
-1. **Auto-injection** — before each prompt, picks the 2-3 most relevant memory files from `~/.claude/projects/*/memory/` and prepends them as a `<shed-context>` block. Local embeddings (`bge-small-en-v1.5`), no LLM call, <200ms.
+1. **Auto-injection** — before each prompt, picks the 2-3 most relevant memory files from `~/.claude/projects/*/memory/` and prepends them as a `<shed-context>` block. Local ONNX embeddings (`bge-small-en-v1.5`), no LLM call, ~150ms encode.
 2. **Correction detection** — when you push back ("no, don't…", "use X instead"), shed catches the signal, classifies it into an allowlisted category, redacts PII, and queues a proposed lesson.
-3. **Memory GC** — `shed evolve` archives memories you haven't cited in 90 days, surfaces near-duplicates, and promotes the hot ones. Pure Python, no model calls.
+3. **Permission-pattern learning** *(new in v0.2)* — every time you approve a tool call ("allow Bash(shed *)?"), shed silently logs the canonical pattern. After N approvals of the same shape, it proposes adding it to your `permissions.allow` so Claude Code stops asking.
+4. **Memory GC** — `shed evolve` archives memories you haven't cited in 90 days, surfaces near-duplicates, and promotes the hot ones. Pure Python, no model calls.
 
 You see all of it the next morning via `shed brief` — a one-key (`y`/`n`/`e`/`s`/`p`) walk through pending proposals.
 
@@ -44,10 +45,17 @@ The whole point is you mostly don't *use* it — it just runs.
 shed why "how should I run tests?"   # see what would be injected for a prompt
 shed dash                             # hot/warm/cold memories + recent injections
 shed brief                            # walk pending proposals (j/k navigate, y/n/e/s/p)
-shed evolve                           # GC: archive cold, propose merges
+shed evolve                           # GC: archive cold, propose merges, generate permits
 shed mode private                     # session-level read-only mode
 shed pin coding-prefs                 # never archive this one
 shed undo HEAD                        # revert any auto-applied change
+
+# v0.2 permit subcommands
+shed permit list                      # top patterns shed has seen you approve
+shed permit suggest                   # what would be proposed at current threshold
+shed permit log -n 30                 # tail of recent approvals
+shed permit threshold 5               # require 5 approvals before proposing
+shed permit scan                      # manually run the proposal generator
 ```
 
 ---
@@ -112,11 +120,18 @@ If you ever want to see what shed knows: `cat ~/.shed/state/injections.jsonl`. E
 - [x] Memory GC (cold archive + near-duplicate detection)
 - [x] Morning brief with single-key actions
 - [x] `shed doctor`, `shed undo`, `shed mode`
-- [ ] Optional Haiku judge for ambiguous corrections (v0.2)
-- [ ] launchd plist for weekly `shed evolve` (v0.2)
-- [ ] `shed sync` push/pull to private GitHub repo (v0.2)
-- [ ] Per-category auto-apply with audit trail (v0.2)
-- [ ] Cross-project citation graph (v0.3)
+- [x] **v0.2: ONNX embedder for Intel Mac (45s → 6ms encode)**
+- [x] **v0.2: `shed permit` — learns permission-prompt patterns silently**
+- [ ] Closed-loop injection quality (cite-tracking → ranking weights) (v0.2)
+- [ ] Self-tuning per-kind thresholds (v0.2)
+- [ ] Haiku judge for ambiguous corrections (v0.2)
+- [ ] Statusline indicator (v0.2)
+- [ ] Workflow shape detector + auto skill generator (v0.3)
+- [ ] `shed dash --html` web view + citation graph (v0.3)
+- [ ] `shed sync` push/pull, self-critique meta-loop (v0.4)
+- [ ] Cross-session pattern memory + multi-agent reflection (v1.0)
+
+Full roadmap: see [GitHub milestones](https://github.com/CasterlyGit/shed/milestones).
 
 ---
 

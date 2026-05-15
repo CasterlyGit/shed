@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# shed permit hook — PreToolUse
+# Observes (does not block) tool calls so we can learn frequently-approved patterns.
+# Hard 1s timeout: PreToolUse blocks tool execution, so we MUST be fast.
+set -u
+exec 2>>"{{ log_file }}"
+
+input="$(cat)"
+
+# Best-effort: parse the JSON event, extract tool_name + args, log to permits-pending.
+"{{ python }}" - <<'PY' "$input" >/dev/null 2>&1 || true
+import json, signal, sys
+def _timeout(_s, _f):
+    sys.exit(0)
+signal.signal(signal.SIGALRM, _timeout)
+signal.setitimer(signal.ITIMER_REAL, 1.0)
+try:
+    raw = sys.argv[1] if len(sys.argv) > 1 else sys.stdin.read()
+    d = json.loads(raw or "{}")
+    tool_name = d.get("tool_name") or d.get("tool") or ""
+    args = d.get("tool_input") or d.get("input") or d.get("args") or {}
+    session_id = d.get("session_id") or d.get("sessionId")
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except Exception:
+            args = {"_raw": args[:200]}
+    if not isinstance(args, dict):
+        args = {}
+    if tool_name:
+        from shed.permit import log_pending
+        log_pending(tool_name, args, session_id=session_id)
+except SystemExit:
+    pass
+except Exception:
+    pass
+PY
+
+# Always exit 0. We are observe-only — never block tool execution.
+exit 0

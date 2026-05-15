@@ -1,40 +1,54 @@
 #!/usr/bin/env bash
 # shed observe hook — PostToolUse
+# Two jobs:
+#  1. Cross-reference any matching PreToolUse → record permit approval.
+#  2. Detect user corrections in the message text.
 set -u
 exec 2>>"{{ log_file }}"
 
 input="$(cat)"
 
-text="$(printf '%s' "$input" | "{{ python }}" -c '
-import json, sys
-try:
-    d = json.loads(sys.stdin.read() or "{}")
-    # Try a few likely keys; we want any user-visible text.
-    for k in ("user_message", "prompt", "transcript", "input", "content"):
-        v = d.get(k)
-        if isinstance(v, str) and v.strip():
-            print(v)
-            break
-except Exception:
-    print("")
-')"
-
-if [ -z "$text" ]; then
-  exit 0
-fi
-
-"{{ python }}" - <<'PY' "$text" || true
-import sys, signal
-text = sys.argv[1]
-def _to(sig, frame):
+"{{ python }}" - <<'PY' "$input" || true
+import json, signal, sys
+def _to(_s, _f):
     sys.exit(0)
 signal.signal(signal.SIGALRM, _to)
 signal.setitimer(signal.ITIMER_REAL, 2.0)
 try:
-    from shed.observe import observe_text
-    observe_text(text)
+    raw = sys.argv[1] if len(sys.argv) > 1 else sys.stdin.read()
+    d = json.loads(raw or "{}")
+
+    # 1) Permit approval inference (cheap, runs first).
+    tool_name = d.get("tool_name") or d.get("tool")
+    args = d.get("tool_input") or d.get("input") or d.get("args") or {}
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except Exception:
+            args = {"_raw": args[:200]}
+    if not isinstance(args, dict):
+        args = {}
+    session_id = d.get("session_id") or d.get("sessionId")
+    if tool_name:
+        try:
+            from shed.observe import observe_tool_use
+            observe_tool_use(tool_name, args, session_id=session_id)
+        except Exception:
+            pass
+
+    # 2) Correction detection on user-visible text.
+    text = ""
+    for k in ("user_message", "prompt", "transcript", "input", "content"):
+        v = d.get(k)
+        if isinstance(v, str) and v.strip():
+            text = v
+            break
+    if text:
+        try:
+            from shed.observe import observe_text
+            observe_text(text)
+        except Exception as e:
+            sys.stderr.write(f"shed observe failed: {e}\n")
 except SystemExit:
     pass
-except Exception as e:
-    sys.stderr.write(f"shed observe failed: {e}\n")
 PY
