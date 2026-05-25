@@ -81,8 +81,14 @@ def inject_for_prompt(
     index.load()
     index.upsert(mems)
 
+    # Token-pressure override: inject.sh exports SHED_MAX_INJECT when the
+    # session is heavy. Caps top_k to avoid burning context on memories.
+    import os as _os
+    _max_inject = _os.environ.get("SHED_MAX_INJECT")
+    effective_top_k = min(cfg.inject.top_k, int(_max_inject)) if _max_inject else cfg.inject.top_k
+
     # Pull a wider slate so quality re-ranking has room to move things.
-    raw_top_k = max(cfg.inject.top_k * 4, cfg.inject.top_k)
+    raw_top_k = max(effective_top_k * 4, effective_top_k)
     hits = index.search(prompt, top_k=raw_top_k)
 
     # L1 closed-loop quality re-ranking.
@@ -101,7 +107,7 @@ def inject_for_prompt(
     candidates: list[Candidate] = []
     chosen: list[Memory] = []
     for mid, slug, final, cosine, q in blended:
-        keep = final >= cfg.inject.min_score and len(chosen) < cfg.inject.top_k
+        keep = final >= cfg.inject.min_score and len(chosen) < effective_top_k
         candidates.append(
             Candidate(id=mid, slug=slug, score=final, chosen=keep, cosine=cosine, quality=q)
         )
