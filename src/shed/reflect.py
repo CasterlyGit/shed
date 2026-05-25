@@ -4,12 +4,21 @@ The ``Stop`` hook calls ``shed reflect`` with the recent transcript. We do
 two things:
 
 1. **Citation detection (L1).** Look at the last injection's chosen memories
-   and check if the response text actually cites any of them. Logs to the
-   quality.jsonl event log so future ranking can downweight memories that
-   never get cited.
+   and check if the **assistant response** actually cites any of them. Logs to
+   ``quality.jsonl`` so future ranking can downweight memories that never get
+   cited.
 
-2. **Tail-of-transcript correction detection.** Same logic as ``observe``
-   but at session granularity — catches corrections in the final user turn.
+2. **Correction detection.** Run ``observe_text`` against the **user's last
+   message** — that's where corrections live. Writes a proposal markdown if a
+   correction signal trips.
+
+The Stop hook payload from Claude Code contains ``transcript_path`` and
+``session_id`` — NOT the message text. ``reflect_from_stop_payload`` parses
+the transcript JSONL, picks the last assistant turn (response text) and last
+user turn (correction-candidate text), and dispatches both.
+
+The legacy ``reflect_text(text)`` is kept for backward compat / unit tests,
+but it can only do one half of the work cleanly. Prefer the new entrypoint.
 """
 
 from __future__ import annotations
@@ -23,20 +32,75 @@ from shed.observe import Proposal, observe_text
 from shed.quality import detect_citations_in_response, log_citations
 
 
+def reflect_from_stop_payload(
+    payload: dict,
+    cfg: Config | None = None,
+    cwd: Path | None = None,
+) -> tuple[int, Proposal | None]:
+    """Stop-hook entrypoint. Parses ``transcript_path`` and runs both halves.
+
+    Returns ``(num_cited, correction_proposal_or_None)``.
+
+    The payload is the JSON Claude Code sends to the Stop hook. Expected
+    keys: ``transcript_path``, ``session_id``, ``stop_hook_active``.
+    """
+    from shed.config import load_config
+
+    cfg = cfg or load_config()
+
+    transcript_path = payload.get("transcript_path") if isinstance(payload, dict) else None
+    if not transcript_path:
+        return 0, None
+
+    assistant_text, user_text = _extract_last_turns(Path(transcript_path))
+
+    # L1: citation detection on the ASSISTANT response.
+    n_cited = 0
+    if assistant_text:
+        try:
+            n_cited = _detect_and_log_citations(assistant_text)
+        except Exception:
+            pass
+
+    # Statusline refresh.
+    if cfg.statusline.enabled and cfg.statusline.refresh_on_stop:
+        try:
+            from shed.statusline import write_cache
+
+            write_cache()
+        except Exception:
+            pass
+
+    # Correction detection on the USER message.
+    proposal = None
+    if user_text:
+        try:
+            proposal = observe_text(user_text, cfg=cfg, cwd=cwd)
+        except Exception:
+            proposal = None
+
+    return n_cited, proposal
+
+
 def reflect_text(
     text: str,
     cfg: Config | None = None,
     cwd: Path | None = None,
 ) -> Proposal | None:
+    """Legacy single-text entrypoint.
+
+    Kept for backward compatibility. Runs citation detection AND correction
+    detection on the same string — which is only useful for tests where the
+    caller doesn't have separate assistant/user texts. Real Stop-hook callers
+    should use ``reflect_from_stop_payload``.
+    """
     from shed.config import load_config
 
     cfg = cfg or load_config()
-    # L1: cite-detection on the last injection.
     try:
         _detect_and_log_citations(text)
     except Exception:
         pass
-    # #12: refresh statusline cache.
     if cfg.statusline.enabled and cfg.statusline.refresh_on_stop:
         try:
             from shed.statusline import write_cache
@@ -45,6 +109,77 @@ def reflect_text(
         except Exception:
             pass
     return observe_text(text, cfg=cfg, cwd=cwd)
+
+
+# ---------------------------------------------------------------------------
+
+
+def _extract_last_turns(transcript_path: Path) -> tuple[str, str]:
+    """Walk the transcript JSONL backwards; return (assistant_text, user_text).
+
+    Skips tool-use / tool-result / thinking blocks — we only want the
+    natural-language text the model spoke and the natural-language text the
+    user typed. Each returned string is the concatenation of all ``text``
+    blocks from the most recent matching turn.
+    """
+    if not transcript_path or not transcript_path.exists():
+        return "", ""
+
+    assistant_text = ""
+    user_text = ""
+
+    try:
+        lines = transcript_path.read_text(errors="ignore").splitlines()
+    except Exception:
+        return "", ""
+
+    # Walk newest → oldest so we stop as soon as both are filled.
+    for line in reversed(lines):
+        if assistant_text and user_text:
+            break
+        try:
+            row = json.loads(line)
+        except Exception:
+            continue
+        msg = row.get("message")
+        if not isinstance(msg, dict):
+            continue
+        role = msg.get("role")
+        content = msg.get("content")
+        text = _text_from_content(content)
+        if not text:
+            continue
+        if role == "assistant" and not assistant_text:
+            assistant_text = text
+        elif role == "user" and not user_text:
+            # Skip user turns that are just tool-result echoes — they have
+            # no natural-language text.
+            user_text = text
+
+    return assistant_text, user_text
+
+
+def _text_from_content(content) -> str:
+    """Pull natural-language text out of an Anthropic message content payload.
+
+    Returns ``""`` when the content is empty / only tool_use / only
+    tool_result / only thinking blocks.
+    """
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+    parts: list[str] = []
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        btype = block.get("type")
+        if btype == "text":
+            t = block.get("text")
+            if isinstance(t, str) and t.strip():
+                parts.append(t)
+        # Skip tool_use, tool_result, thinking, image, etc.
+    return "\n".join(parts).strip()
 
 
 def _detect_and_log_citations(response_text: str) -> int:
@@ -68,7 +203,6 @@ def _detect_and_log_citations(response_text: str) -> int:
     if not chosen:
         return 0
 
-    # Build (id, body, title) tuples for the cite-detector.
     chosen_ids = {c.get("id") for c in chosen if c.get("id")}
     candidate_tuples = []
     for m in discover():

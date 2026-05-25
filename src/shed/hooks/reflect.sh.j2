@@ -1,37 +1,30 @@
 #!/usr/bin/env bash
 # shed reflect hook — Stop
+# Claude Code Stop payload: {transcript_path, session_id, stop_hook_active}.
+# We pass the whole payload to Python; reflect_from_stop_payload parses the
+# transcript JSONL (last assistant text → citations,
+# last user text → correction detection).
 set -u
 exec 2>>"{{ log_file }}"
 
 input="$(cat)"
-
-text="$(printf '%s' "$input" | "{{ python }}" -c '
-import json, sys
-try:
-    d = json.loads(sys.stdin.read() or "{}")
-    for k in ("transcript", "last_user_message", "user_message", "prompt"):
-        v = d.get(k)
-        if isinstance(v, str) and v.strip():
-            print(v)
-            break
-except Exception:
-    print("")
-')"
-
-if [ -z "$text" ]; then
+if [ -z "$input" ]; then
   exit 0
 fi
 
-"{{ python }}" - <<'PY' "$text" || true
-import sys, signal
-text = sys.argv[1]
-def _to(sig, frame):
+"{{ python }}" - <<'PY' "$input" || true
+import json, signal, sys
+def _to(_s, _f):
     sys.exit(0)
 signal.signal(signal.SIGALRM, _to)
-signal.setitimer(signal.ITIMER_REAL, 2.0)
+signal.setitimer(signal.ITIMER_REAL, 3.0)
 try:
-    from shed.reflect import reflect_text
-    reflect_text(text)
+    payload = json.loads(sys.argv[1] or "{}")
+except Exception:
+    payload = {}
+try:
+    from shed.reflect import reflect_from_stop_payload
+    reflect_from_stop_payload(payload)
 except SystemExit:
     pass
 except Exception as e:
