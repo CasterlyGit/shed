@@ -1,25 +1,35 @@
 # shed
 
-> Claude Code that learns you. A silent shadow layer that picks the right notes from your past, watches for corrections, and grooms its own memory.
+[![CI](https://github.com/CasterlyGit/shed/actions/workflows/ci.yml/badge.svg)](https://github.com/CasterlyGit/shed/actions/workflows/ci.yml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-**Status:** v0.2 — fast embedder + permission-pattern learning. Local-only by default, every proposal manually approved, single command to install.
+**Shed is a Claude Code hook layer that silently injects the 2–3 most relevant memory files before every prompt — local ONNX embeddings, ~150ms, no LLM call.**
+
+**Status:** v0.2 — hooks wired, fast embedder, permission-pattern learning
 
 ---
 
-## Why this exists
+## How it works
 
-You tell Claude the same things over and over. *"Use uv, not pip." "Squash-merge, delete the branch." "Don't push without running pytest."* Then a week later you're saying it again. The agent has the memory of a goldfish.
+| Hook | Trigger | What shed does | Latency |
+|---|---|---|---|
+| `UserPromptSubmit` | before each prompt | embed query, retrieve top-k memories, inject as `<shed-context>` block | ~150ms |
+| `Stop` | after correction signal | classify, redact PII, queue proposal | async |
+| `PostToolUse` | after tool-call approval | log pattern, check repeat threshold | <10ms |
 
-`shed` is the layer in between. It runs as a set of Claude Code hooks and silently does four things:
+**No LLM call in the retrieval path. All local.** The embedder is `bge-small-en-v1.5` via ONNX Runtime — 6ms encode after warmup, no network, no API key needed.
 
-1. **Auto-injection** — before each prompt, picks the 2-3 most relevant memory files from `~/.claude/projects/*/memory/` and prepends them as a `<shed-context>` block. Local ONNX embeddings (`bge-small-en-v1.5`), no LLM call, ~150ms encode.
-2. **Correction detection** — when you push back ("no, don't…", "use X instead"), shed catches the signal, classifies it into an allowlisted category, redacts PII, and queues a proposed lesson.
-3. **Permission-pattern learning** *(new in v0.2)* — every time you approve a tool call ("allow Bash(shed *)?"), shed silently logs the canonical pattern. After N approvals of the same shape, it proposes adding it to your `permissions.allow` so Claude Code stops asking.
-4. **Memory GC** — `shed evolve` archives memories you haven't cited in 90 days, surfaces near-duplicates, and promotes the hot ones. Pure Python, no model calls.
+Four systems:
+
+1. **Auto-injection** — before each prompt, picks the 2–3 most relevant memory files from `~/.claude/projects/*/memory/` and prepends them as a `<shed-context>` block.
+2. **Correction detection** — when you push back ("no, don't…", "use X instead"), shed catches the signal, classifies it, redacts PII, and queues a proposed lesson.
+3. **Permission-pattern learning** *(v0.2)* — every time you approve a tool call, shed silently logs the canonical pattern. After N approvals of the same shape, it proposes adding it to `permissions.allow`.
+4. **Memory GC** — `shed evolve` archives cold memories, surfaces near-duplicates, and promotes the hot ones. Pure Python, no model calls.
 
 You see all of it the next morning via `shed brief` — a one-key (`y`/`n`/`e`/`s`/`p`) walk through pending proposals.
 
-The point: stop re-saying the same thing. Stop scrolling old projects to remember which CLI you settled on. Let the agent build a real model of how you actually work.
+→ **[Design doc](docs/DESIGN.md)** — why hooks, why ONNX, failure modes, memory schema
 
 ---
 
@@ -33,7 +43,7 @@ shed init           # writes ~/.shed/, wires Claude Code hooks, builds index
 shed doctor         # confirms everything is wired
 ```
 
-That's it. New Claude Code sessions pick up the hooks automatically.
+New Claude Code sessions pick up the hooks automatically. No wrapper, no proxy.
 
 ---
 
@@ -43,12 +53,11 @@ The whole point is you mostly don't *use* it — it just runs.
 
 ```bash
 shed why "how should I run tests?"   # see what would be injected for a prompt
-shed dash                             # hot/warm/cold memories + recent injections
+shed stats                            # injection hit rate, proposal ratios, top memories
 shed brief                            # walk pending proposals (j/k navigate, y/n/e/s/p)
+shed dash                             # hot/warm/cold memories + recent injections
 shed evolve                           # GC: archive cold, propose merges, generate permits
 shed mode private                     # session-level read-only mode
-shed pin coding-prefs                 # never archive this one
-shed undo HEAD                        # revert any auto-applied change
 
 # v0.2 permit subcommands
 shed permit list                      # top patterns shed has seen you approve
@@ -60,12 +69,65 @@ shed permit scan                      # manually run the proposal generator
 
 ---
 
+## Observability
+
+```bash
+shed stats          # hit rate, accept/reject ratio, top 5 injected memories
+```
+
+Stats are written to `~/.shed/state/stats.jsonl` (one line per call). The `injection_hit_rate` is a smoothed score — how often an injected memory was actually referenced in the response. A healthy number is 0.3–0.6; below 0.2 suggests the index needs `shed evolve`.
+
+Sample output:
+```
+shed stats (last 7 days)
+─────────────────────────────────────────────
+ injection hit rate    42%
+ memories injected     12
+ memories cited back   5
+ proposal accept rate  80%
+ proposals accepted    4
+ proposals rejected    1
+ top injected (week)   coding-prefs, tool-choices, workflow
+```
+
+---
+
+## Architecture
+
+```
+UserPromptSubmit hook
+  └─ shed inject
+       ├─ bge-small-en-v1.5 (ONNX, ~6ms) — embed query
+       ├─ FAISS / cosine — retrieve top-k
+       ├─ quality re-rank (L1 loop, 30d exp-decay)
+       └─ print <shed-context> block → prepended to prompt
+
+Stop hook
+  └─ shed reflect
+       ├─ detect corrections in response
+       ├─ classify + redact PII
+       └─ queue proposal to ~/.shed/proposals/
+
+PostToolUse hook
+  └─ shed observe
+       ├─ cross-reference pending permits
+       └─ record approval (infer from PostToolUse timing)
+```
+
+**Key properties:**
+- **Fail-open.** Any exception in `shed inject` returns `""` — the prompt proceeds unmodified, Claude Code keeps running.
+- **Hard timeout.** The inject hook must finish in <200ms (shell wrapper enforces 2s).
+- **No LLM calls** in any hot path. Proposals can optionally use a Haiku judge for ambiguous corrections, but it's off by default (`use_haiku_judge = false`).
+- **Manual-approve by default.** Every proposal goes through `shed brief`. `auto_apply = false`.
+
+---
+
 ## Config
 
 `~/.shed/config.toml`:
 
 ```toml
-auto_apply = false                       # never auto-apply in v0.1
+auto_apply = false                       # never auto-apply
 categories = [                           # only these can become proposals
   "coding-preferences",
   "tool-choices",
@@ -79,7 +141,7 @@ min_score = 0.25
 timeout_ms = 2000
 
 [observe]
-use_haiku_judge = false                  # v0.2 — keep cost zero in v0.1
+use_haiku_judge = false                  # keep cost zero (default)
 
 [evolve]
 cold_days = 90
@@ -98,31 +160,28 @@ remote = "git@github.com:CasterlyGit/shed-state-private.git"
 
 ## Privacy
 
-This is the section that matters.
-
-- **Local-only by default.** `~/.shed/` is a git repo with no remote configured. You must run `shed sync enable` to opt in.
-- **Allowlist by category.** Proposals only fire for categories in `allowlist.toml`. Anything that doesn't match a category is dropped, full stop.
-- **Manual-approve by default.** Every proposal goes through `shed brief`. Auto-apply is OFF in v0.1.
-- **Per-session privacy mode.** `shed mode private` (or `SHED_MODE=private`, or a `.shed-off` file in the cwd) disables logging, proposals, and learning for that session.
+- **Local-only by default.** `~/.shed/` is a git repo with no remote configured.
+- **Allowlist by category.** Proposals only fire for categories in `allowlist.toml`. Anything else is dropped.
+- **Manual-approve by default.** Every proposal goes through `shed brief`. Auto-apply is OFF.
+- **Per-session privacy mode.** `shed mode private` (or `SHED_MODE=private`, or a `.shed-off` file in cwd) disables logging, proposals, and learning.
 - **Global kill switch.** `touch ~/.shed/disabled` turns off everything immediately.
-- **Sensitive-content redactor.** Before any write, a deterministic regex pass drops lines containing emails outside your whitelist, phone numbers, SSNs, Luhn-valid card numbers, and common API key patterns. Belt-and-suspenders alongside the category allowlist.
-
-If you ever want to see what shed knows: `cat ~/.shed/state/injections.jsonl`. Everything is human-readable.
+- **PII redactor.** Before any write, a deterministic regex pass drops emails outside your whitelist, phone numbers, SSNs, Luhn-valid card numbers, and API key patterns.
 
 ---
 
 ## Roadmap
 
 - [x] Memory injection via UserPromptSubmit hook
-- [x] Local embeddings (sentence-transformers, hash fallback)
+- [x] Local ONNX embeddings (bge-small-en-v1.5, ~6ms encode)
 - [x] Correction detection + category-allowlisted proposals
 - [x] PII redactor with Luhn-checked CC detection
 - [x] Memory GC (cold archive + near-duplicate detection)
 - [x] Morning brief with single-key actions
 - [x] `shed doctor`, `shed undo`, `shed mode`
-- [x] **v0.2: ONNX embedder for Intel Mac (45s → 6ms encode)**
-- [x] **v0.2: `shed permit` — learns permission-prompt patterns silently**
-- [ ] Closed-loop injection quality (cite-tracking → ranking weights) (v0.2)
+- [x] **v0.2: ONNX embedder (45s → 6ms encode)**
+- [x] **v0.2: `shed permit` — learns permission-prompt patterns**
+- [x] **v0.2: L1 quality loop (cite-tracking → ranking weights)**
+- [x] **v0.2: `shed stats` — injection hit rate, proposal ratios**
 - [ ] Self-tuning per-kind thresholds (v0.2)
 - [ ] Haiku judge for ambiguous corrections (v0.2)
 - [ ] Statusline indicator (v0.2)
@@ -142,8 +201,6 @@ Full roadmap: see [GitHub milestones](https://github.com/CasterlyGit/shed/milest
 ---
 
 ## Companion repos
-
-shed is the fifth leg of a stack:
 
 - **[laptop-dictation](https://github.com/CasterlyGit/laptop-dictation)** — voice in (push-to-talk Whisper)
 - **[hand-signal](https://github.com/CasterlyGit/hand-signal)** — gesture in (MediaPipe Hands)

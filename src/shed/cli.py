@@ -614,6 +614,46 @@ def permit_scan() -> None:
         console.print(f"[green]proposed[/green] {p.pattern} (×{p.count}) -> {p.path.name}")
 
 
+@app.command()
+def stats(
+    write: bool = typer.Option(True, "--write/--no-write", help="append a row to stats.jsonl"),
+) -> None:
+    """Observability snapshot: injection hit rate, proposal ratios, top memories."""
+    from shed.stats import collect, write_stats
+
+    row = collect()
+    if write:
+        path = write_stats(row)
+        console.print(f"[dim]logged → {path}[/dim]")
+
+    hit = row.get("injection_hit_rate")
+    accept = row.get("proposal_accept_rate")
+
+    table = Table(title="shed stats (last 7 days)", border_style="cyan")
+    table.add_column("metric", style="bold")
+    table.add_column("value", style="cyan")
+
+    table.add_row(
+        "injection hit rate",
+        f"{hit:.0%}" if hit is not None else "[dim]no data[/dim]",
+    )
+    table.add_row("memories injected (total)", str(row.get("injected_total", 0)))
+    table.add_row("memories cited back", str(row.get("cited_total", 0)))
+    table.add_row(
+        "proposal accept rate",
+        f"{accept:.0%}" if accept is not None else "[dim]no data[/dim]",
+    )
+    table.add_row("proposals accepted", str(row.get("proposals_accepted", 0)))
+    table.add_row("proposals rejected", str(row.get("proposals_rejected", 0)))
+
+    top = row.get("top_injected") or []
+    table.add_row(
+        "top injected (week)",
+        ", ".join(top) if top else "[dim]none[/dim]",
+    )
+    console.print(table)
+
+
 # ---------------------------------------------------------------------------
 # doctor
 # ---------------------------------------------------------------------------
