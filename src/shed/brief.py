@@ -166,7 +166,22 @@ def walk_brief(console: Console | None = None) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _write_status(path: Path, status: str) -> None:
+    """Prepend ``status: <status>`` line to proposal file before it's removed.
+
+    Stats scanning reads this before deletion, but deletion usually follows
+    immediately. Writing here ensures _proposal_stats() can pick it up during
+    the same session if called before deletion.
+    """
+    try:
+        text = path.read_text()
+        path.write_text(f"status: {status}\n" + text)
+    except Exception:
+        pass
+
+
 def _accept(pp: PendingProposal, console: Console, pin: bool) -> None:
+    _write_status(pp.path, "accepted")
     _log_decision(pp, "accept")
     if pp.kind == "permit":
         from shed.permit import apply_proposal
@@ -202,6 +217,7 @@ def _accept(pp: PendingProposal, console: Console, pin: bool) -> None:
 
 
 def _reject(pp: PendingProposal, console: Console) -> None:
+    _write_status(pp.path, "rejected")
     _log_decision(pp, "reject")
     pp.path.unlink(missing_ok=True)
     _changelog(f"rejected: {pp.path.name}")
