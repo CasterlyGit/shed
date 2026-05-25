@@ -79,6 +79,13 @@ def reflect_from_stop_payload(
         except Exception:
             proposal = None
 
+    # Auto-write stats row at session end (fail-open).
+    try:
+        from shed.stats import write_stats
+        write_stats()
+    except Exception:
+        pass
+
     return n_cited, proposal
 
 
