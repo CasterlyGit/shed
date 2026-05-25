@@ -33,6 +33,22 @@ You see all of it the next morning via `shed brief` — a one-key (`y`/`n`/`e`/`
 
 ---
 
+## Benchmarks
+
+Measured with hash embedder on synthetic 200-item memory set. Run `python scripts/bench.py` to reproduce on your machine.
+
+| Operation | Cold | Warm | p95 |
+|---|---|---|---|
+| embed query (hash) | 7.3ms | 0.1ms | 0.4ms |
+| top-k retrieval (50 memories) | 0.1ms | 0.1ms | 13.1ms |
+| top-k retrieval (200 memories) | 0.1ms | 0.2ms | 4.3ms |
+| top-k retrieval (500 memories) | 0.2ms | 0.4ms | 4.8ms |
+| full inject round-trip (200 memories) | 0.1ms | 0.2ms | 0.4ms |
+
+ONNX embedder (bge-small-en-v1.5): ~150ms cold, ~8ms warm. Full results: [docs/benchmarks.md](docs/benchmarks.md).
+
+---
+
 ## Setup
 
 ```bash
