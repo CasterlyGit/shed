@@ -72,6 +72,32 @@ def inject_for_prompt(
     if not prompt or not prompt.strip():
         return _skip(prompt, "empty-prompt", start)
 
+    # Auto-handoff: handoff-writer drops pending-inject.md when the prior session
+    # was heavy. Consume it one-shot so a fresh session auto-loads that context
+    # without the user pasting a shed-ho- ID. Fail-open: any error falls through to
+    # normal memory injection.
+    try:
+        import os as _os
+        from .config import state_dir as _state_dir
+
+        _pending = Path(_state_dir()) / "pending-inject.md"
+        if _pending.exists():
+            _doc = _pending.read_text()
+            _pending.unlink()  # one-shot — never re-inject the same handoff
+            if _doc.strip():
+                _block = "<shed-context>\n" + _doc.strip() + "\n</shed-context>\n"
+                elapsed_ms = (time.perf_counter() - start) * 1000.0
+                return InjectionResult(
+                    prompt=prompt,
+                    chosen=[],
+                    candidates=[],
+                    block=_block,
+                    elapsed_ms=elapsed_ms,
+                    skipped_reason="pending-handoff-injected",
+                )
+    except Exception:
+        pass
+
     mems = discover()
     if not mems:
         return _skip(prompt, "no-memories", start)

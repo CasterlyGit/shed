@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+# compact-guard.sh — UserPromptSubmit hook
+# Fires every turn. Reads learned thresholds from guard-thresholds.json —
+# no hardcoded numbers. Thresholds drift automatically via update-guard-thresholds.py
+# (called by handoff-writer.sh at session end).
+#
+# Trigger logic (first match wins):
+#   turns >= strong_turns OR tokens > strong_tokens  → strong push + handoff ID
+#   turns >= soft_turns   OR tokens > soft_tokens    → soft nudge + handoff ID
+set -u
+exec 2>>"/Users/casterly/.shed/log/shed.log"
+
+input="$(cat)"
+SID="$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null || true)"
+# macOS fallback: stable key from parent process start time (consistent within a session)
+if [ -z "$SID" ]; then
+  SID="fb-$(ps -p $PPID -o lstart= 2>/dev/null | tr -d ' :-' || echo "$$")"
+fi
+
+# --- Turn counter (incremented here at UserPromptSubmit, not Stop) ---
+TURN_FILE="/tmp/shed-turns-$SID"
+TURNS=0
+[ -f "$TURN_FILE" ] && TURNS=$(cat "$TURN_FILE" 2>/dev/null || echo 0)
+TURNS=$(( TURNS + 1 ))
+echo "$TURNS" > "$TURN_FILE"
+
+# --- Token state ---
+STATE="/tmp/shed-tokens-$SID"
+TOKENS=0
+[ -f "$STATE" ] && TOKENS=$(cat "$STATE" 2>/dev/null || echo 0)
+# ensure numeric
+printf '%d' "$TOKENS" > /dev/null 2>&1 || TOKENS=0
+
+# --- Burn rate: tokens per turn ---
+BURN_RATE=0
+if [ "$TURNS" -gt 1 ]; then
+  BURN_RATE=$(( TOKENS / TURNS ))
+fi
+
+# --- Handoff ID for this session ---
+HF_ID="hf_${SID:0:8}"
+
+# --- Load learned thresholds (fall back to safe defaults) ---
+THRESHOLDS="${HOME}/.shed/state/guard-thresholds.json"
+if [ -f "$THRESHOLDS" ]; then
+  SOFT_TOKENS=$(python3  -c "import json,sys; d=json.load(open('$THRESHOLDS')); print(d.get('soft_tokens',100000))"   2>/dev/null || echo 100000)
+  STRONG_TOKENS=$(python3 -c "import json,sys; d=json.load(open('$THRESHOLDS')); print(d.get('strong_tokens',130000))" 2>/dev/null || echo 130000)
+  SOFT_TURNS=$(python3   -c "import json,sys; d=json.load(open('$THRESHOLDS')); print(d.get('soft_turns',30))"         2>/dev/null || echo 30)
+  STRONG_TURNS=$(python3 -c "import json,sys; d=json.load(open('$THRESHOLDS')); print(d.get('strong_turns',40))"       2>/dev/null || echo 40)
+else
+  SOFT_TOKENS=100000; STRONG_TOKENS=130000; SOFT_TURNS=30; STRONG_TURNS=40
+fi
+
+# --- LIVE DATA: per-session tokens are the GATE; 5h quota is only the DIAL ----
+# Architecture (per user, 2026-05-31): we must never waste tokens in ANY session.
+# So the trigger is THIS SESSION'S real context-window token burn. The 5-hour
+# quota is NOT a gate — it only scales the thresholds tighter (low budget left →
+# fire earlier) or looser (plenty of budget → fewer interruptions).
+#
+# rate-limits.json (written by Claude Code's statusline hook) carries BOTH:
+#   - context_window.total_input_tokens  → REAL per-session tokens (better than filesize/4)
+#   - context_window.used_percentage     → REAL context fill %
+#   - rate_limits.five_hour.used_percentage → the quota DIAL
+# Trusted only if captured within 300s; else we keep the filesize/4 proxy TOKENS.
+RL="${HOME}/.claude/state/rate-limits.json"
+QUOTA_PCT=""
+CTX_PCT=""
+REAL_TOKENS=""
+if [ -f "$RL" ]; then
+  read -r QUOTA_PCT CTX_PCT REAL_TOKENS < <(python3 - "$RL" <<'PY' 2>/dev/null
+import json, sys, time, calendar, datetime
+try:
+    d = json.load(open(sys.argv[1]))
+    cap = d.get("captured_at", "")
+    ts = calendar.timegm(datetime.datetime.strptime(cap, "%Y-%m-%dT%H:%M:%SZ").timetuple())
+    if time.time() - ts > 300:
+        print("")  # stale → no live signal, fall back to proxy
+    else:
+        cw = d.get("context_window", {})
+        q = d["rate_limits"]["five_hour"]["used_percentage"]
+        c = cw.get("used_percentage", 0)
+        t = cw.get("total_input_tokens", 0)
+        print(f"{q} {c} {t}")
+except Exception:
+    print("")
+PY
+)
+fi
+
+# Ground truth = real per-session context tokens when fresh; else proxy.
+if [ -n "$REAL_TOKENS" ] && [ "$REAL_TOKENS" -gt 0 ] 2>/dev/null; then
+  TOKENS="$REAL_TOKENS"
+fi
+
+# --- QUOTA DIAL: scale the learned thresholds, never gate on quota alone ------
+# Low quota left to burn (high used %) → tighten (fire sooner). High headroom
+# (low used %) → relax. Mid → baseline. Applied as integer percentages.
+if [ -n "$QUOTA_PCT" ]; then
+  if   [ "$QUOTA_PCT" -ge 70 ]; then SCALE=70   # tight: ×0.70
+  elif [ "$QUOTA_PCT" -ge 50 ]; then SCALE=85   # ×0.85
+  elif [ "$QUOTA_PCT" -lt 30 ]; then SCALE=115  # relaxed: ×1.15
+  else SCALE=100
+  fi
+  SOFT_TOKENS=$((   SOFT_TOKENS   * SCALE / 100 ))
+  STRONG_TOKENS=$(( STRONG_TOKENS * SCALE / 100 ))
+fi
+
+# --- Decision logic: GATE on per-session tokens (real when fresh) -------------
+PROJECTED_10=$(( TOKENS + BURN_RATE * 10 ))  # projected tokens in 10 more turns
+CTX_NOTE=""
+[ -n "$CTX_PCT" ] && CTX_NOTE=" / ctx ${CTX_PCT}%"
+[ -n "$QUOTA_PCT" ] && CTX_NOTE="${CTX_NOTE} / 5h quota ${QUOTA_PCT}%"
+
+# Strong: learned strong threshold (quota-scaled)
+if [ "$TURNS" -ge "$STRONG_TURNS" ] || [ "$TOKENS" -gt "$STRONG_TOKENS" ]; then
+  printf '{"systemMessage":"🛑 Turn %d / ~%dK tokens%s — session heavy. Handoff ID: `%s`\nType /fresh to continue clean, then paste the ID."}\n' \
+    "$TURNS" "$(( TOKENS / 1000 ))" "$CTX_NOTE" "$HF_ID"
+  printf '\n[COMPACT-GUARD: Turn %d / ~%dK tokens / burn ~%d/turn. SESSION IS HEAVY. Before doing anything else, tell the user this session is at ~%dK tokens, show them their handoff ID in backticks like `%s` so they can triple-click to copy it, and suggest they type /fresh. Do not start implementing until they respond.]\n' \
+    "$TURNS" "$(( TOKENS / 1000 ))" "$BURN_RATE" "$HF_ID"
+  exit 0
+fi
+
+# Soft: learned soft threshold
+if [ "$TURNS" -ge "$SOFT_TURNS" ] || [ "$TOKENS" -gt "$SOFT_TOKENS" ] || [ "$PROJECTED_10" -gt $(( STRONG_TOKENS + 20000 )) ]; then
+  printf '{"systemMessage":"📋 Turn %d / ~%dK tokens%s. Handoff ID: `%s` — consider /fresh before the next big task."}\n' \
+    "$TURNS" "$(( TOKENS / 1000 ))" "$CTX_NOTE" "$HF_ID"
+  printf '\n[COMPACT-GUARD: ~%dK tokens / turn %d. Mention to the user at the end of your response that /fresh would save tokens. Show handoff ID in backticks like `%s` so they can triple-click to select the whole thing for the new session.]\n' \
+    "$(( TOKENS / 1000 ))" "$TURNS" "$HF_ID"
+  exit 0
+fi
+
+exit 0
