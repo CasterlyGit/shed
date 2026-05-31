@@ -17,10 +17,10 @@ TURNS=1
 [ -f "$TURN_FILE" ] && TURNS=$(( $(cat "$TURN_FILE" 2>/dev/null || echo 0) + 1 ))
 echo "$TURNS" > "$TURN_FILE"
 
-# Handoff ID = "hf-" + first 8 chars of session UUID (stable, unique per session)
-HF_ID="hf_${SID:0:8}"
+# Handoff ID = "shed-ho-" + first 8 chars of session UUID (stable, unique per session)
+HF_ID="shed-ho-${SID:0:8}"
 
-python3 "${HOME}/.claude/scripts/generate-handoff.py" "$TRANSCRIPT" "$SID" "$HF_ID" 2>/dev/null || true
+python3 "${HOME}/.claude/scripts/generate-handoff.py" "$TRANSCRIPT" "$SID" "$HF_ID" || true
 
 HANDOFF="${HOME}/.claude/state/handoff-${HF_ID}.md"
 
@@ -70,7 +70,7 @@ FINAL_TURNS=0
 python3 "${HOME}/.shed/scripts/update-guard-thresholds.py" "$SESSION_TOKENS" "$FINAL_TURNS" 2>/dev/null || true
 
 # Auto-cleanup: delete unconsumed hf_ handoffs older than 3 days, all archives
-find "${HOME}/.claude/state" -maxdepth 1 -name "handoff-hf_*.md" -mtime +3 -delete 2>/dev/null || true
+find "${HOME}/.claude/state" -maxdepth 1 \( -name "handoff-hf_*.md" -o -name "handoff-shed-ho-*.md" \) -mtime +3 -delete 2>/dev/null || true
 find "${HOME}/.claude/state" -maxdepth 1 -name "handoff-archive-*.md" -delete 2>/dev/null || true
 
 exit 0

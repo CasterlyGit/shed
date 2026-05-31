@@ -28,6 +28,7 @@ from shed.embeddings import Index, get_embedder
 from shed.memory import Memory, discover
 from shed.quality import compute_scores
 from shed.quality import log_injection as log_quality_injection
+from shed.redact import redact
 
 
 @dataclass
@@ -85,7 +86,9 @@ def inject_for_prompt(
             _doc = _pending.read_text()
             _pending.unlink()  # one-shot — never re-inject the same handoff
             if _doc.strip():
-                _block = "<shed-context>\n" + _doc.strip() + "\n</shed-context>\n"
+                # Redact before injecting — the handoff doc is built from raw
+                # transcript text and may carry PII the observe pipeline never saw.
+                _block = "<shed-context>\n" + redact(_doc.strip()) + "\n</shed-context>\n"
                 elapsed_ms = (time.perf_counter() - start) * 1000.0
                 return InjectionResult(
                     prompt=prompt,
@@ -176,7 +179,9 @@ def format_block(chosen: list[Memory], max_chars: int) -> str:
         "this prompt. Use them silently; do not mention shed unless asked. -->"
     )
     for m in chosen:
-        body = m.body.strip()
+        # Redact memory bodies before they enter the prompt context — some
+        # memory files predate shed's observe/redact pipeline.
+        body = redact(m.body.strip())
         if len(body) > max_chars:
             body = body[: max_chars - 3].rstrip() + "..."
         cat = f" ({m.category})" if m.category else ""

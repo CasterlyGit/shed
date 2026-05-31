@@ -99,20 +99,36 @@ def _injection_stats(window: float = SEVEN_DAYS) -> dict:
 
 
 def _proposal_stats() -> dict:
-    """Scan proposals dir; return accept/reject counts and rate."""
-    proposals_dir = shed_home() / "proposals"
-    if not proposals_dir.exists():
-        return {"proposal_accept_rate": None, "proposals_accepted": 0, "proposals_rejected": 0}
+    """Accept/reject counts and rate.
 
+    Prefer the durable ``decisions.jsonl`` (brief.py writes one row per accept/
+    reject, and the proposal file is deleted immediately so it can't be scanned
+    for a status afterwards). Fall back to scanning any proposal files that
+    still carry a status line, for backward compatibility.
+    """
     accepted = rejected = 0
-    for p in proposals_dir.glob("*.md"):
-        text = p.read_text()
-        # Convention: proposal files are prepended with "accepted: true/false"
-        # after user action, or we infer from the brief walk marking.
-        if "accepted: true" in text or "status: accepted" in text:
-            accepted += 1
-        elif "accepted: false" in text or "status: rejected" in text:
-            rejected += 1
+
+    dpath = state_dir() / "decisions.jsonl"
+    if dpath.exists():
+        for line in dpath.read_text().splitlines():
+            try:
+                d = json.loads(line).get("decision")
+            except Exception:
+                continue
+            if d == "accept":
+                accepted += 1
+            elif d == "reject":
+                rejected += 1
+
+    if accepted + rejected == 0:
+        proposals_dir = shed_home() / "proposals"
+        if proposals_dir.exists():
+            for p in proposals_dir.glob("*.md"):
+                text = p.read_text()
+                if "accepted: true" in text or "status: accepted" in text:
+                    accepted += 1
+                elif "accepted: false" in text or "status: rejected" in text:
+                    rejected += 1
 
     total = accepted + rejected
     rate: float | None = round(accepted / total, 3) if total > 0 else None

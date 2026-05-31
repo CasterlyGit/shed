@@ -39,6 +39,13 @@ class ObserveConfig(BaseModel):
     enabled: bool = True
     use_haiku_judge: bool = False  # v0.2 — keep cost zero in v0.1
     haiku_model: str = "claude-haiku-4-5"
+    # L5 self-tuning gate: drop correction signals below this confidence.
+    # 0.0 keeps every signal (v0.2 behaviour); thresholds.tune_all() raises it
+    # from accept/reject feedback so user rejections actually reduce noise.
+    min_confidence: float = 0.0
+    # A correction is short and leads with the pushback. Pasted blobs (tweets,
+    # logs, transcripts) are never corrections — skip anything longer than this.
+    max_correction_chars: int = 4000
 
 
 class EvolveConfig(BaseModel):
@@ -62,6 +69,54 @@ class SyncConfig(BaseModel):
 class StatuslineConfig(BaseModel):
     enabled: bool = False  # opt-in: writing to ~/.claude/settings.json is intrusive
     refresh_on_stop: bool = True
+
+
+class LearnConfig(BaseModel):
+    """Active procedure-learning (the `shed learn` track).
+
+    shed's other loops are *passive* — they watch sessions and graduate facts.
+    ``learn`` is *active*: you hand it a recurring task, it runs the task for
+    real against a Claude Code subagent N times, prunes its own approach via a
+    ``strategy.md`` scratchpad, and converges on the cheapest reliable path —
+    then graduates a ``SKILL.md`` into ``~/.claude/skills/``.
+
+    Off by default — it spends real tokens on the inner agent, so it only runs
+    when explicitly invoked (`shed learn "<task>"`). This mirrors the
+    Haiku-judge discipline: nothing that costs money fires unattended.
+    """
+
+    enabled: bool = False
+    max_iters: int = 4  # Autobrowse caps low (3–5) and short-circuits hard.
+    # Converge when BOTH cost and turn-count change less than these fractions
+    # for `converge_window` consecutive iterations.
+    converge_cost_eps: float = 0.05
+    converge_turns_eps: float = 0.05
+    converge_window: int = 2
+    # The subagent runner: a shell command template. `{task}` and `{strategy}`
+    # are substituted. Default targets `claude -p` headless. Empty = require the
+    # caller to pass a runner (tests inject a fake).
+    runner_cmd: str = ""
+    # Where accepted skills land. Empty -> ~/.claude/skills/ (live).
+    skills_dir: str = ""
+    # Per-iteration wall-clock cap (seconds) before the runner is killed.
+    iter_timeout_s: int = 600
+    # --- SkillOpt-derived hardening ---
+    # Validation gate: after convergence, run the task ONCE more on a held-out
+    # input. Only graduate if it strictly passes. "Converged" != "correct".
+    validate_gate: bool = True
+    # Compactness: cap the graduated SKILL.md body. SkillOpt's median final
+    # skill is ~920 tokens; bloat is slop. ~4 chars/token -> ~5200 chars.
+    max_skill_chars: int = 5200
+    # Model stamp: which Claude model graduated the skill. When the active model
+    # changes, the retirement gate re-evaluates skills graduated on older
+    # models, since a stronger base may have made the procedure obsolete.
+    # Empty -> read from $SHED_MODEL_ID or "unknown".
+    model_id: str = ""
+    # Retirement gate: when re-evaluating an existing live skill, if a
+    # baseline (without-skill) run scores within this fraction of the
+    # skill-using run, retire the skill — it stopped earning its keep.
+    # 0.05 = within 5% means "no measurable benefit".
+    retire_margin: float = 0.05
 
 
 class PermitsConfig(BaseModel):
@@ -90,6 +145,7 @@ class Config(BaseModel):
     privacy: PrivacyConfig = Field(default_factory=PrivacyConfig)
     sync: SyncConfig = Field(default_factory=SyncConfig)
     permits: PermitsConfig = Field(default_factory=PermitsConfig)
+    learn: LearnConfig = Field(default_factory=LearnConfig)
     statusline: StatuslineConfig = Field(default_factory=StatuslineConfig)
     embedding_model: str = "BAAI/bge-small-en-v1.5"
 
@@ -129,6 +185,12 @@ def memory_roots() -> list[Path]:
             mem = proj / "memory"
             if mem.is_dir():
                 roots.append(mem)
+    # The global CLAUDE.md is the single highest-signal context in the system
+    # (global rules, project anchors, workflow prefs). discover() handles a
+    # plain-file root, so treat it as one big always-available memory.
+    global_md = claude_home() / "CLAUDE.md"
+    if global_md.is_file():
+        roots.append(global_md)
     return roots
 
 
@@ -160,6 +222,20 @@ def index_dir() -> Path:
     return shed_home() / "index"
 
 
+def runs_dir() -> Path:
+    """Per-`shed learn` run scratch: strategy.md, traces, iteration logs."""
+    return shed_home() / "runs"
+
+
+def skills_dir() -> Path:
+    """Where graduated skills land when accepted. Override via config or
+    ``SHED_SKILLS_DIR``; defaults to the live ``~/.claude/skills/``."""
+    env = os.environ.get("SHED_SKILLS_DIR")
+    if env:
+        return Path(env).expanduser()
+    return claude_home() / "skills"
+
+
 def archive_dir() -> Path:
     return shed_home() / "archive"
 
@@ -186,6 +262,7 @@ def ensure_dirs() -> None:
         index_dir(),
         archive_dir(),
         log_dir(),
+        runs_dir(),
     ):
         d.mkdir(parents=True, exist_ok=True)
 

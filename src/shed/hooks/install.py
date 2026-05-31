@@ -112,14 +112,25 @@ def _patch_settings() -> Path:
     settings = claude_home() / "settings.json"
     settings.parent.mkdir(parents=True, exist_ok=True)
     if settings.exists():
+        # Always back up before mutating — even a re-install over a file the
+        # user has hand-edited since the first install.
+        backup = settings.with_suffix(".json.shed-bak")
+        if not backup.exists():
+            shutil.copy2(settings, backup)
         try:
             data = json.loads(settings.read_text())
-            # Backup first time we modify.
-            backup = settings.with_suffix(".json.shed-bak")
-            if not backup.exists():
-                shutil.copy2(settings, backup)
-        except Exception:
-            data = {}
+        except json.JSONDecodeError as e:
+            # NEVER silently overwrite a file we can't parse — that would wipe
+            # the user's model/theme/permissions. Refuse loudly; the backup is
+            # already at .json.shed-bak.
+            raise RuntimeError(
+                f"shed: {settings} is not valid JSON ({e}). Fix it by hand "
+                f"(a backup is at {backup}); shed refuses to overwrite it."
+            ) from e
+        if not isinstance(data, dict):
+            raise RuntimeError(
+                f"shed: {settings} is not a JSON object; shed refuses to overwrite it."
+            )
     else:
         data = {}
 
@@ -199,3 +210,45 @@ def _build_initial_index() -> int:
         return n
     except Exception:
         return 0
+
+
+def uninstall(purge: bool = False) -> dict:
+    """Remove shed's hooks from ``~/.claude/settings.json`` and (optionally)
+    delete ``~/.shed/``.
+
+    Only entries whose command points inside ``hooks_dir()`` are removed, so a
+    user's own hooks are untouched. settings.json is backed up first and written
+    atomically (tmp + replace). The #1 trust blocker for shell-hook tools is
+    "can I cleanly undo this?" — this is that escape hatch.
+    """
+    settings = claude_home() / "settings.json"
+    removed = 0
+    if settings.exists():
+        backup = settings.with_suffix(".json.shed-bak")
+        if not backup.exists():
+            shutil.copy2(settings, backup)
+        try:
+            data = json.loads(settings.read_text())
+        except json.JSONDecodeError:
+            data = None
+        if isinstance(data, dict) and isinstance(data.get("hooks"), dict):
+            hd = str(hooks_dir())
+            for event, entries in list(data["hooks"].items()):
+                if not isinstance(entries, list):
+                    continue
+                kept = [e for e in entries if hd not in (_entry_command(e) or "")]
+                removed += len(entries) - len(kept)
+                if kept:
+                    data["hooks"][event] = kept
+                else:
+                    del data["hooks"][event]
+            tmp = settings.with_suffix(".json.shed-tmp")
+            tmp.write_text(json.dumps(data, indent=2) + "\n")
+            tmp.replace(settings)
+    purged = False
+    if purge:
+        sh = shed_home()
+        if sh.exists():
+            shutil.rmtree(sh, ignore_errors=True)
+            purged = True
+    return {"hooks_removed": removed, "purged": purged, "settings": str(settings)}

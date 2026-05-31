@@ -298,6 +298,112 @@ def pin(slug: str = typer.Argument(...)) -> None:
 
 
 # ---------------------------------------------------------------------------
+# learn — active procedure learning
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def learn(
+    task: str = typer.Argument(..., help="the recurring task to learn (in quotes)"),
+    max_iters: int = typer.Option(None, "--max-iters", help="override convergence cap"),
+    runner: str = typer.Option(
+        None, "--runner", help="shell runner for the inner agent (default: config; e.g. 'claude -p')"
+    ),
+    enable: bool = typer.Option(
+        False, "--enable", help="force-enable for this run even if learn.enabled is false"
+    ),
+) -> None:
+    """Learn a procedure: run the task to convergence, graduate a SKILL.md.
+
+    Spends real tokens on the inner agent — runs only when you invoke it.
+    Accept the graduated skill in `shed brief`; it lands live in your skills dir.
+    """
+    from shed.learn import learn_task
+
+    cfg = load_config()
+    if max_iters is not None:
+        cfg.learn.max_iters = max_iters
+    if runner is not None:
+        cfg.learn.runner_cmd = runner
+    if enable:
+        cfg.learn.enabled = True
+
+    if not cfg.learn.enabled:
+        console.print(
+            "[yellow]learn is off.[/yellow] Re-run with [bold]--enable[/bold] "
+            "or set [bold]learn.enabled = true[/bold] in ~/.shed/config.toml."
+        )
+        raise typer.Exit(1)
+    if not cfg.learn.runner_cmd:
+        console.print(
+            "[yellow]no runner configured.[/yellow] Pass [bold]--runner 'claude -p'[/bold] "
+            "or set [bold]learn.runner_cmd[/bold] in config."
+        )
+        raise typer.Exit(1)
+
+    console.print(
+        Panel(
+            f"task: [bold]{task}[/bold]\n"
+            f"max_iters: {cfg.learn.max_iters}  •  runner: {cfg.learn.runner_cmd}\n"
+            f"[dim]each iteration runs the task for real — this costs tokens[/dim]",
+            title="shed learn",
+            border_style="green",
+        )
+    )
+
+    def _show(it) -> None:
+        if it.ok:
+            console.print(f"  iter {it.n}: {it.turns} turns, ${it.cost:.4f}")
+        else:
+            console.print(f"  iter {it.n}: [red]failed[/red] — {it.error}")
+
+    res = learn_task(task, cfg=cfg, on_iter=_show)
+
+    if not res.iterations:
+        console.print(f"[red]didn't run:[/red] {res.reason}")
+        raise typer.Exit(1)
+
+    best = res.best
+    console.print(
+        Panel(
+            f"{res.reason}\n"
+            f"best: {best.turns} turns, ${best.cost:.4f}\n"
+            + (f"proposal: {res.proposal_path}\n" if res.proposal_path else "no proposal (all runs failed)\n")
+            + "[dim]review with `shed brief` — accept to write SKILL.md live[/dim]",
+            title="converged" if res.converged else "stopped",
+            border_style="green" if res.converged else "yellow",
+        )
+    )
+
+
+@app.command(name="skills")
+def skills_cmd() -> None:
+    """List graduated skills in the live skills dir."""
+    from shed.config import skills_dir
+
+    sd = skills_dir()
+    if not sd.exists():
+        console.print(f"[dim]no skills dir yet ({sd})[/dim]")
+        return
+    found = sorted(sd.glob("*/SKILL.md"))
+    if not found:
+        console.print(f"[dim]no skills in {sd}[/dim]")
+        return
+    table = Table(title=f"skills — {sd}")
+    table.add_column("name")
+    table.add_column("source", style="dim")
+    for p in found:
+        text = p.read_text()
+        src = "?"
+        for line in text.splitlines():
+            if line.strip().startswith("source:"):
+                src = line.split(":", 1)[1].strip()
+                break
+        table.add_row(p.parent.name, src)
+    console.print(table)
+
+
+# ---------------------------------------------------------------------------
 # mode
 # ---------------------------------------------------------------------------
 
@@ -506,6 +612,101 @@ def quality(top: int = typer.Option(20, "--top", help="show top N memories by in
             f"{q.cited_recent:.1f}",
         )
     console.print(table)
+
+
+# ---------------------------------------------------------------------------
+# report — one honest health verdict
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def report() -> None:
+    """Health verdict: is shed earning its keep? (hit-rate, accept-rate, logs)."""
+    from shed.maintenance import build_report
+
+    r = build_report()
+    table = Table(title="shed report", border_style="magenta")
+    table.add_column("signal")
+    table.add_column("value", style="cyan")
+    hr = r["injection_hit_rate"]
+    ar = r["proposal_accept_rate"]
+    table.add_row("injection hit-rate", f"{hr:.0%}" if hr is not None else "—")
+    table.add_row("memories injected", str(r["injected_total"]))
+    table.add_row("memories cited", str(r["cited_total"]))
+    table.add_row("proposal accept-rate", f"{ar:.0%}" if ar is not None else "—")
+    table.add_row("proposals pending", str(r["proposals_pending"]))
+    table.add_row("junk proposals", str(r["junk_proposals"]))
+    table.add_row("state logs", f"{r['log_bytes_total'] // 1000}KB")
+    if r["top_injected"]:
+        table.add_row("top injected", ", ".join(r["top_injected"]))
+    console.print(table)
+    console.print(Panel(r["verdict"], border_style="green" if r["healthy"] else "yellow", title="verdict"))
+
+
+# ---------------------------------------------------------------------------
+# groom — keep shed's own state bounded
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def groom(
+    cap: int = typer.Option(5000, "--cap", help="lines to keep per rotating log"),
+    proposals: bool = typer.Option(False, "--proposals", help="also list junk proposals"),
+    purge: bool = typer.Option(False, "--purge", help="with --proposals: delete the junk"),
+) -> None:
+    """Trim oversized state logs (and optionally purge junk proposals)."""
+    from shed.maintenance import find_junk_proposals, groom_logs
+
+    freed = groom_logs(cap_lines=cap)
+    if freed:
+        total = sum(freed.values())
+        console.print(f"[green]trimmed[/green] {len(freed)} log(s), freed {total // 1000}KB")
+        for name, n in freed.items():
+            console.print(f"  {name}: -{n // 1000}KB")
+    else:
+        console.print("[dim]logs already within cap[/dim]")
+    if proposals:
+        junk = find_junk_proposals()
+        if not junk:
+            console.print("[dim]no junk proposals[/dim]")
+            return
+        table = Table(title="junk proposals")
+        table.add_column("file", style="dim")
+        table.add_column("reason", style="yellow")
+        for j in junk:
+            table.add_row(j["path"].name, j["reason"])
+        console.print(table)
+        if purge:
+            for j in junk:
+                j["path"].unlink(missing_ok=True)
+            console.print(f"[red]purged[/red] {len(junk)} junk proposal(s)")
+        else:
+            console.print("[dim]re-run with --proposals --purge to delete[/dim]")
+
+
+# ---------------------------------------------------------------------------
+# uninstall — clean removal (the trust escape hatch)
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def uninstall(
+    purge: bool = typer.Option(False, "--purge", help="also delete ~/.shed/ entirely"),
+) -> None:
+    """Remove shed's hooks from Claude Code settings (backed-up, atomic)."""
+    from shed.hooks.install import uninstall as uninstall_hooks
+
+    res = uninstall_hooks(purge=purge)
+    console.print(
+        Panel(
+            f"hooks removed: {res['hooks_removed']}\n"
+            f"settings: {res['settings']}\n"
+            f"~/.shed purged: {res['purged']}\n\n"
+            "[dim]A backup of settings.json is at settings.json.shed-bak.[/dim]",
+            title="shed uninstall",
+            border_style="magenta",
+        )
+    )
 
 
 # ---------------------------------------------------------------------------

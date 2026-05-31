@@ -167,7 +167,28 @@ def observe_text(
     if not sig:
         return None
 
-    _log_correction(sig)
+    # A correction is short and leads with the pushback. A multi-KB paste
+    # (tweet, log, transcript) that merely happens to contain "no"/"stop"/
+    # "actually" is not a correction — drop it before it pollutes the queue.
+    if len(text) > cfg.observe.max_correction_chars:
+        return None
+
+    # L5 self-tuning gate: thresholds.tune_all() raises this from the user's
+    # accept/reject history, so repeatedly-rejected low-confidence noise stops
+    # being queued over time. Default 0.0 keeps v0.2 behaviour.
+    try:
+        from shed.thresholds import get_threshold
+
+        min_conf = get_threshold("lesson", cfg.observe.min_confidence)
+    except Exception:
+        min_conf = cfg.observe.min_confidence
+    if sig.confidence < min_conf:
+        return None
+
+    # Redact BEFORE anything touches disk — corrections.jsonl must never store
+    # raw (possibly-PII) user text.
+    cleaned = redact(text, cfg.privacy.email_whitelist_domains) if cfg.privacy.redact else text
+    _log_correction(sig, cleaned)
 
     allowlist = load_allowlist() or list(cfg.categories)
     category = classify(text, allowlist)
@@ -176,8 +197,6 @@ def observe_text(
         # category. Better to miss a lesson than to silently learn something
         # the user didn't opt into.
         return None
-
-    cleaned = redact(text, cfg.privacy.email_whitelist_domains) if cfg.privacy.redact else text
 
     title = _title_from(cleaned)
     slug = slugify(title)
@@ -222,11 +241,11 @@ def _write_proposal(
     )
 
 
-def _log_correction(sig: CorrectionSignal) -> None:
+def _log_correction(sig: CorrectionSignal, text: str | None = None) -> None:
     state_dir().mkdir(parents=True, exist_ok=True)
     row = {
         "ts": time.time(),
-        "text": sig.text[:500],
+        "text": (text if text is not None else sig.text)[:500],
         "confidence": sig.confidence,
         "matches": sig.matches,
     }

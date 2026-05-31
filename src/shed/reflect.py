@@ -24,6 +24,7 @@ but it can only do one half of the work cleanly. Prefer the new entrypoint.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 from shed.config import Config, state_dir
@@ -83,6 +84,15 @@ def reflect_from_stop_payload(
     try:
         from shed.stats import write_stats
         write_stats()
+    except Exception:
+        pass
+
+    # Self-maintenance: trim runaway state logs once any is genuinely large.
+    # stat-gated so the common (small-log) case is nearly free; keeps the inject
+    # hot path fast on a months-old install. Fail-open.
+    try:
+        from shed.maintenance import maybe_groom
+        maybe_groom()
     except Exception:
         pass
 
@@ -159,8 +169,12 @@ def _extract_last_turns(transcript_path: Path) -> tuple[str, str]:
         if role == "assistant" and not assistant_text:
             assistant_text = text
         elif role == "user" and not user_text:
-            # Skip user turns that are just tool-result echoes — they have
-            # no natural-language text.
+            # Skip Claude Code hook-feedback messages that get injected as
+            # user-role turns (e.g. "Stop hook feedback: ..."). They are not
+            # corrections — and the literal word "Stop" trips the correction
+            # prefilter, which is what was flooding the proposal queue.
+            if _is_hook_feedback(text):
+                continue
             user_text = text
 
     return assistant_text, user_text
@@ -189,6 +203,31 @@ def _text_from_content(content) -> str:
     return "\n".join(parts).strip()
 
 
+_HOOK_FEEDBACK_RE = re.compile(
+    r"^(stop|pretooluse|posttooluse|userpromptsubmit|sessionstart|"
+    r"subagentstop|notification|precompact)\s+hook\s+feedback\b",
+    re.I,
+)
+_HOOK_PATH_RE = re.compile(r"^\[[^\]]*hooks?[^\]]*\]:", re.I)
+
+
+def _is_hook_feedback(text: str) -> bool:
+    """True if a 'user' turn is actually Claude Code hook-feedback noise.
+
+    Claude Code echoes hook stdout/stderr back into the transcript as a
+    user-role message ("Stop hook feedback: ...", "[/.../hooks/x.sh]: No
+    stderr output"). These must never be treated as corrections — left
+    unfiltered they dominate corrections.jsonl and the proposal queue.
+    """
+    if not text:
+        return False
+    s = text.lstrip()
+    if _HOOK_FEEDBACK_RE.match(s):
+        return True
+    first = s.split("\n", 1)[0]
+    return bool(_HOOK_PATH_RE.match(first))
+
+
 def _detect_and_log_citations(response_text: str) -> int:
     """Read the last injection from injections.jsonl, scan response for
     citations of those memories, log to quality.jsonl. Returns count cited.
@@ -212,11 +251,25 @@ def _detect_and_log_citations(response_text: str) -> int:
 
     chosen_ids = {c.get("id") for c in chosen if c.get("id")}
     candidate_tuples = []
+    by_id = {}
     for m in discover():
         if m.id in chosen_ids:
             candidate_tuples.append((m.id, m.body, m.title))
+            by_id[m.id] = m
 
     cited = detect_citations_in_response(response_text, candidate_tuples)
     if cited:
         log_citations(cited)
+        # Close the loop into the memory file's own metadata so GC ranks by
+        # real usage (cite_count / last_cited_at), not just creation date.
+        # Best-effort — a write error must never break reflect.
+        from shed.memory import record_citation
+
+        for mid in cited:
+            m = by_id.get(mid)
+            if m is not None:
+                try:
+                    record_citation(m)
+                except Exception:
+                    pass
     return len(cited)

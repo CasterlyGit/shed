@@ -41,7 +41,19 @@ class PendingProposal:
     @classmethod
     def from_path(cls, path: Path) -> PendingProposal:
         text = path.read_text()
-        kind = _extract_yaml(text, "kind") or ("permit" if path.name.startswith("permit-") else "lesson")
+        if path.name.startswith("skill-"):
+            default_kind = "skill"
+        elif path.name.startswith("permit-"):
+            default_kind = "permit"
+        else:
+            default_kind = "lesson"
+        kind = _extract_yaml(text, "kind") or default_kind
+        if kind == "skill":
+            name = _extract_yaml(text, "name") or path.stem
+            return cls(
+                path=path, title=f"skill: {name}", category="procedure",
+                body=text, kind="skill", pattern=name,
+            )
         if kind == "permit":
             pattern = _extract_yaml(text, "pattern")
             count = _extract_yaml(text, "count") or "?"
@@ -88,7 +100,20 @@ def render_brief(console: Console | None = None) -> str:
         return console.export_text()
 
     permits = [p for p in pending if p.kind == "permit"]
-    lessons = [p for p in pending if p.kind != "permit"]
+    skills = [p for p in pending if p.kind == "skill"]
+    lessons = [p for p in pending if p.kind not in ("permit", "skill")]
+
+    if skills:
+        stable = Table(title="Skill proposals (graduated procedures)", show_lines=False, border_style="green")
+        stable.add_column("#", style="cyan", width=3)
+        stable.add_column("skill")
+        stable.add_column("q", style="dim", width=6)
+        stable.add_column("file", style="dim")
+        for i, sp in enumerate(skills[:10], 1):
+            qs = _extract_yaml(sp.body, "quality_score")
+            q_str = f"q={float(qs):.2f}" if qs else ""
+            stable.add_row(str(i), sp.pattern or sp.title[:60], q_str, sp.path.name)
+        console.print(stable)
 
     if permits:
         ptable = Table(title="Permission proposals", show_lines=False, border_style="cyan")
@@ -195,6 +220,13 @@ def _accept(pp: PendingProposal, console: Console, pin: bool) -> None:
             console.print(f"[red]permit failed:[/red] {msg}")
         return
 
+    if pp.kind == "skill":
+        target = _apply_skill(pp)
+        pp.path.unlink(missing_ok=True)
+        _changelog(f"skill accepted: {pp.pattern} -> {target}")
+        console.print(f"[green]skill written[/green] -> {target}")
+        return
+
     target_root = _accept_root()
     target_root.mkdir(parents=True, exist_ok=True)
     slug = slugify(pp.title)
@@ -216,6 +248,36 @@ def _accept(pp: PendingProposal, console: Console, pin: bool) -> None:
     console.print(f"[green]accepted[/green] -> {target}")
 
 
+def _apply_skill(pp: PendingProposal) -> Path:
+    """Write a graduated skill live into the skills dir as
+    ``<skills_dir>/<name>/SKILL.md``.
+
+    Sanitizes the name so a crafted proposal can't escape the skills dir, and
+    backs up any hand-edited SKILL.md before overwriting it.
+    """
+    import shutil
+
+    from shed.config import skills_dir
+    from shed.learn import extract_skill_body
+
+    raw_name = pp.pattern or slugify(pp.title)
+    # Path-traversal guard: keep only the final component, reslug if it differs.
+    name = Path(raw_name).name
+    if not name or name != raw_name:
+        name = slugify(raw_name) or "skill"
+    body = extract_skill_body(pp.body)
+    root = skills_dir().resolve()
+    target = root / name / "SKILL.md"
+    if not str(target.resolve()).startswith(str(root)):
+        raise ValueError(f"unsafe skill name: {raw_name!r}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        # Single rolling backup — never clobber a hand-edited skill silently.
+        shutil.copy2(target, target.parent / "SKILL.md.shed-bak")
+    target.write_text(body)
+    return target
+
+
 def _reject(pp: PendingProposal, console: Console) -> None:
     _write_status(pp.path, "rejected")
     _log_decision(pp, "reject")
@@ -225,13 +287,37 @@ def _reject(pp: PendingProposal, console: Console) -> None:
 
 
 def _log_decision(pp: PendingProposal, decision: str) -> None:
-    """Feed the L5 self-tuning loop."""
+    """Feed the L5 self-tuning loop AND keep a durable decision record.
+
+    The proposal file is deleted immediately after accept/reject, so stats can
+    no longer scan it for a status line — we persist every decision to
+    ``decisions.jsonl`` so ``shed stats``/``shed report`` can compute a real
+    accept-rate.
+    """
+    confidence = _extract_confidence(pp.body) or 0.5
+    kind = pp.kind or "lesson"
     try:
         from shed.thresholds import log_feedback
 
-        confidence = _extract_confidence(pp.body) or 0.5
-        kind = pp.kind or "lesson"
         log_feedback(kind, confidence, decision)
+    except Exception:
+        pass
+    try:
+        import json as _json
+        import time as _time
+
+        from shed.config import state_dir
+
+        state_dir().mkdir(parents=True, exist_ok=True)
+        row = {
+            "ts": _time.time(),
+            "kind": kind,
+            "category": pp.category,
+            "confidence": confidence,
+            "decision": decision,
+        }
+        with (state_dir() / "decisions.jsonl").open("a") as f:
+            f.write(_json.dumps(row) + "\n")
     except Exception:
         pass
 

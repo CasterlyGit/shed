@@ -38,7 +38,9 @@ if [ "$TURNS" -gt 1 ]; then
 fi
 
 # --- Handoff ID for this session ---
-HF_ID="hf_${SID:0:8}"
+# Canonical format: shed-ho-<hex>, derived identically to handoff-writer.sh so
+# the emitted ID resolves to the doc that hook writes. Never mint legacy hf_.
+HF_ID="shed-ho-${SID:0:8}"
 
 # --- Load learned thresholds (fall back to safe defaults) ---
 THRESHOLDS="${HOME}/.shed/state/guard-thresholds.json"
