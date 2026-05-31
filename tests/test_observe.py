@@ -27,6 +27,18 @@ def test_observe_drops_unclassifiable(shed_home_path):
     assert p is None
 
 
+def test_observe_dedups_same_correction(shed_home_path):
+    # The Stop hook re-observes the same last-user message every turn. The
+    # same correction must not spawn a new proposal file each time.
+    text = "don't push to main, run pytest first"
+    p1 = observe_text(text)
+    p2 = observe_text(text)
+    assert p1 is not None and p2 is not None
+    assert p1.path == p2.path
+    n = len(list((shed_home_path / "proposals").glob("*.md")))
+    assert n == 1, f"expected 1 proposal, found {n}"
+
+
 def test_observe_redacts_pii_from_body(shed_home_path):
     p = observe_text("no, don't push, my number is 415-555-1212")
     assert p is not None

@@ -226,9 +226,31 @@ def _format_body(cleaned: str, category: str, sig: CorrectionSignal) -> str:
 def _write_proposal(
     slug: str, category: str, title: str, body: str, source: str
 ) -> Proposal:
-    proposals_dir().mkdir(parents=True, exist_ok=True)
+    pdir = proposals_dir()
+    pdir.mkdir(parents=True, exist_ok=True)
+
+    # Write-time dedup. The Stop hook re-observes the same last-user message
+    # every turn, so a single correction (e.g. one handoff request) used to
+    # spawn one timestamped proposal *per turn* — 9 identical files from one
+    # ask. Filenames are ``{ts}-{slug}.md``; an existing file with the same
+    # slug means this lesson is already queued. Return it instead of writing
+    # a duplicate. (Pending only — accepted/rejected proposals leave the dir,
+    # so a genuinely-new instance of the same correction can re-queue later.)
+    existing = sorted(pdir.glob(f"*-{slug}.md"))
+    if existing:
+        path = existing[0]
+        return Proposal(
+            slug=slug,
+            category=category,
+            title=title,
+            body=path.read_text(errors="ignore") if path.exists() else body,
+            source_text=source,
+            path=path,
+            created_at=now_iso(),
+        )
+
     ts = time.strftime("%Y%m%d-%H%M%S")
-    path = proposals_dir() / f"{ts}-{slug}.md"
+    path = pdir / f"{ts}-{slug}.md"
     path.write_text(body)
     return Proposal(
         slug=slug,
