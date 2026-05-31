@@ -42,6 +42,8 @@ HOOK_EVENTS = {
     "reflect.sh": "Stop",
     "brief.sh": "SessionStart",
     "permit_observe.sh": "PreToolUse",
+    "compact-guard.sh": "UserPromptSubmit",
+    "handoff-writer.sh": "Stop",
 }
 
 
@@ -94,6 +96,8 @@ def _render_hooks() -> list[Path]:
         ("reflect.sh.j2", "reflect.sh"),
         ("brief.sh.j2", "brief.sh"),
         ("permit_observe.sh.j2", "permit_observe.sh"),
+        ("compact-guard.sh.j2", "compact-guard.sh"),
+        ("handoff-writer.sh.j2", "handoff-writer.sh"),
     ):
         tmpl_path = _template_dir() / tmpl_name
         text = Template(tmpl_path.read_text()).render(python=python, log_file=str(log_file))
