@@ -221,7 +221,7 @@ Full roadmap: see [GitHub milestones](https://github.com/CasterlyGit/shed/milest
 - **[laptop-dictation](https://github.com/CasterlyGit/laptop-dictation)** — voice in (push-to-talk Whisper)
 - **[hand-signal](https://github.com/CasterlyGit/hand-signal)** — gesture in (MediaPipe Hands)
 - **[curby](https://github.com/CasterlyGit/curby)** — agent dispatcher (voice → autonomous Claude Code)
-- **[approver](https://github.com/CasterlyGit/approver)** — attention router for Claude Code approval prompts
+- **approver** *(planned)* — attention router for Claude Code approval prompts
 - **shed** — memory layer that learns from your corrections
 
 ---
