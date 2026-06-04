@@ -26,6 +26,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 import signal
 import smtplib
 import subprocess
@@ -51,7 +52,8 @@ from . import governor, host
 
 GRACE_S = int(os.environ.get("SHED_PAUSE_GRACE_S", "120"))
 RESUME_BUFFER_S = 120          # spawn a little after resets_at, not on the dot
-MAX_ATTEMPTS = 8               # per queue entry, across walls
+MAX_ATTEMPTS = 8               # build entries: respawn cap across walls
+GOAL_MAX_ATTEMPTS = 500        # goal entries: deadline-bound (expires_at), not attempt-bound
 DIGEST_HOUR = 8                # morning digest sent on first tick ≥ 08:30
 DIGEST_MINUTE = 30
 GMAIL_USER = os.environ.get("WORKFLOW_GMAIL_USER", "tarunsp23@gmail.com")
@@ -62,6 +64,17 @@ RESUME_PROMPT = (
     "runtime (autonomous pause→resume loop). Re-read _run.json, `git log`, and "
     "your own previous work in this workspace, then CONTINUE the original task "
     "autonomously to completion. Do not start over; do not ask questions."
+)
+
+RESUME_PROMPT_GOAL = (
+    "You are an autonomous GOAL run managed by the shed S1 runtime; your previous "
+    "iteration ended (5h-wall pause or end-of-cycle). Re-read _run.json, `git log`, "
+    "and your own previous work in this workspace, then keep iterating toward the "
+    "goal:\n\n{goal}\n\nWork in plan → execute → verify cycles. Print the single "
+    "line GOAL-COMPLETE as the last line of your final message ONLY when the goal "
+    "is fully met and verified; otherwise end with a concise progress note — the "
+    "harness relaunches you with full context until the deadline. Do not start "
+    "over; do not ask questions."
 )
 
 
@@ -89,6 +102,10 @@ def enqueue_resume(
     resume_at: float | None = None,
     reason: str = "wall-imminent",
     attempts: int = 0,
+    kind: str = "build",
+    goal: str = "",
+    expires_at: float = 0,
+    max_attempts: int | None = None,
 ) -> Path:
     d = resume_queue_dir()
     d.mkdir(parents=True, exist_ok=True)
@@ -103,10 +120,15 @@ def enqueue_resume(
             "resume_at": int(resume_at or (now_epoch() + 1800)),
             "reason": reason,
             "attempts": attempts,
+            "kind": kind,
+            "goal": goal,
+            "expires_at": int(expires_at),
+            "max_attempts": int(max_attempts or (GOAL_MAX_ATTEMPTS if kind == "goal" else MAX_ATTEMPTS)),
             "queued_at": int(now_epoch()),
         },
     )
-    digest_event("enqueue-resume", slug=slug, reason=reason, resume_at=int(resume_at or 0))
+    digest_event("enqueue-resume", slug=slug, reason=reason, job_kind=kind,
+                 resume_at=int(resume_at or 0))
     return p
 
 
@@ -149,13 +171,20 @@ def pause_active_run(active: dict, gov: dict, sleep_fn=time.sleep) -> None:
     fh = (gov.get("five_hour") or {})
     resets_at = fh.get("resets_at") or 0
     run_state = read_json(Path(ws) / "_run.json") if ws else None
+    rs = run_state or {}
+    # Carry kind/goal/deadline/attempts across the wall — a goal job mid-flight
+    # must come back as a goal job, with its history intact (not reset to zero).
     enqueue_resume(
         slug=slug,
         workspace=ws,
         title=active.get("title", slug),
-        model=(run_state or {}).get("model", ""),
+        model=rs.get("model", ""),
         resume_at=(resets_at + RESUME_BUFFER_S) if resets_at else None,
         reason="wall-imminent",
+        attempts=int(rs.get("resume_attempt", 0)),
+        kind=rs.get("kind", "build"),
+        goal=rs.get("goal", ""),
+        expires_at=float(rs.get("expires_at", 0) or 0),
     )
     digest_event("pause-done", slug=slug)
 
@@ -168,16 +197,22 @@ def respawn(entry: dict) -> int | None:
         return None
     statefile = ws / "_run.json"
     state = read_json(statefile) or {}
+    kind = entry.get("kind") or state.get("kind") or "build"
+    goal = entry.get("goal") or state.get("goal") or ""
+    prompt = RESUME_PROMPT_GOAL.format(goal=goal) if kind == "goal" else RESUME_PROMPT
     state.update(
         {
             "slug": entry["slug"],
             "title": entry.get("title", entry["slug"]),
-            "prompt": RESUME_PROMPT,
+            "prompt": prompt,
             "workspace": str(ws),
             "model": entry.get("model") or state.get("model") or "",
             "resume": True,
             "status": "resuming",
             "resume_attempt": int(entry.get("attempts", 0)) + 1,
+            "kind": kind,
+            "goal": goal,
+            "expires_at": int(entry.get("expires_at") or state.get("expires_at") or 0),
             "queued_at": datetime.now().isoformat(),
         }
     )
@@ -220,11 +255,19 @@ def process_resume_queue(gov: dict, now: float | None = None) -> list[str]:
         if not entry:
             f.unlink(missing_ok=True)
             continue
-        if int(entry.get("attempts", 0)) >= MAX_ATTEMPTS:
+        cap = int(entry.get("max_attempts") or MAX_ATTEMPTS)
+        if int(entry.get("attempts", 0)) >= cap:
             done.mkdir(exist_ok=True)
             f.rename(done / f"{f.stem}.exhausted.json")
             digest_event("resume-exhausted", slug=entry.get("slug"))
             actions.append(f"exhausted:{entry.get('slug')}")
+            continue
+        exp = float(entry.get("expires_at") or 0)
+        if exp and now >= exp:
+            done.mkdir(exist_ok=True)
+            f.rename(done / f"{f.stem}.expired.json")
+            digest_event("resume-expired", slug=entry.get("slug"), job_kind=entry.get("kind"))
+            actions.append(f"expired:{entry.get('slug')}")
             continue
         if now < float(entry.get("resume_at") or 0):
             continue
@@ -239,6 +282,45 @@ def process_resume_queue(gov: dict, now: float | None = None) -> list[str]:
             actions.append(f"respawn:{entry['slug']}")
         break  # at most one respawn per tick
     return actions
+
+
+def park(
+    workspace: str,
+    title: str = "",
+    goal: str = "",
+    hours: float = 48.0,
+    model: str = "",
+) -> Path:
+    """Explicit interactive→autonomous handover (`shed park`).
+
+    The ONLY path by which terminal work enters the autonomous loop — never
+    automatic. Queues this workspace for immediate pickup; the respawn's
+    ``claude --continue`` resumes the most recent conversation in that
+    directory, so the parked terminal session continues headlessly with full
+    context. The terminal itself is yours to close (or not) — the runtime
+    never touches it.
+    """
+    ws = Path(workspace).expanduser().resolve()
+    base = re.sub(r"[^a-z0-9]+", "-", (title or ws.name).lower()).strip("-")[:40] or "parked"
+    slug = base
+    n = 1
+    while (resume_queue_dir() / f"{slug}.json").exists():
+        n += 1
+        slug = f"{base}-{n}"
+    kind = "goal" if goal else "build"
+    p = enqueue_resume(
+        slug=slug,
+        workspace=str(ws),
+        title=title or ws.name,
+        model=model,
+        resume_at=now_epoch(),  # due immediately — next tick picks it up when idle
+        reason="parked",
+        kind=kind,
+        goal=goal,
+        expires_at=(now_epoch() + hours * 3600) if kind == "goal" else 0,
+    )
+    digest_event("parked", slug=slug, job_kind=kind)
+    return p
 
 
 # ---------------------------------------------------------------------------

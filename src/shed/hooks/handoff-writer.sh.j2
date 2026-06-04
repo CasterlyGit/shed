@@ -52,22 +52,30 @@ if [ -n "$REAL_END_TOKENS" ] && [ "$REAL_END_TOKENS" -gt 0 ] 2>/dev/null; then
   SESSION_TOKENS="$REAL_END_TOKENS"
 fi
 
-# If session is heavy (above learned pending_inject_tokens threshold), write
-# pending-inject.md so /clear + next prompt auto-injects context.
-PENDING_THRESHOLD=$(python3 -c "
+# Origin gate: phone (headless watcher) runs still WRITE handoff docs above —
+# that's their wall checkpoint — but they must not touch the interactive
+# machinery: pending-inject.md belongs to the owner's next terminal prompt
+# (a phone run writing it hijacks that; a phone respawn reading it would
+# steal+delete it), and the threshold learner must only learn from real
+# interactive sessions (5h headless marathons would skew the guard).
+if [ "${SHED_ORIGIN:-}" != "phone" ]; then
+  # If session is heavy (above learned pending_inject_tokens threshold), write
+  # pending-inject.md so /clear + next prompt auto-injects context.
+  PENDING_THRESHOLD=$(python3 -c "
 import json; from pathlib import Path
 f = Path.home() / '.shed/state/guard-thresholds.json'
 try: print(json.loads(f.read_text()).get('pending_inject_tokens', 80000))
 except: print(80000)
 " 2>/dev/null || echo 80000)
-if [ "$SESSION_TOKENS" -gt "$PENDING_THRESHOLD" ] && [ -f "$HANDOFF" ]; then
-  cp "$HANDOFF" "${HOME}/.shed/state/pending-inject.md"
-fi
+  if [ "$SESSION_TOKENS" -gt "$PENDING_THRESHOLD" ] && [ -f "$HANDOFF" ]; then
+    cp "$HANDOFF" "${HOME}/.shed/state/pending-inject.md"
+  fi
 
-# Learn from this session — nudge thresholds based on outcome
-FINAL_TURNS=0
-[ -f "$TURN_FILE" ] && FINAL_TURNS="$(cat "$TURN_FILE" 2>/dev/null || echo 0)"
-python3 "${HOME}/.shed/scripts/update-guard-thresholds.py" "$SESSION_TOKENS" "$FINAL_TURNS" 2>/dev/null || true
+  # Learn from this session — nudge thresholds based on outcome
+  FINAL_TURNS=0
+  [ -f "$TURN_FILE" ] && FINAL_TURNS="$(cat "$TURN_FILE" 2>/dev/null || echo 0)"
+  python3 "${HOME}/.shed/scripts/update-guard-thresholds.py" "$SESSION_TOKENS" "$FINAL_TURNS" 2>/dev/null || true
+fi
 
 # Auto-cleanup: delete unconsumed hf_ handoffs older than 3 days, all archives
 find "${HOME}/.claude/state" -maxdepth 1 \( -name "handoff-hf_*.md" -o -name "handoff-shed-ho-*.md" \) -mtime +3 -delete 2>/dev/null || true

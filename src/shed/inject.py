@@ -82,7 +82,11 @@ def inject_for_prompt(
         from .config import state_dir as _state_dir
 
         _pending = Path(_state_dir()) / "pending-inject.md"
-        if _pending.exists():
+        # Phone-origin (headless watcher) sessions never consume it: the file
+        # is one-shot and belongs to the owner's next INTERACTIVE prompt — an
+        # autonomous respawn reading it would both contaminate its own context
+        # and silently delete the owner's handoff.
+        if _os.environ.get("SHED_ORIGIN") != "phone" and _pending.exists():
             _doc = _pending.read_text()
             _pending.unlink()  # one-shot — never re-inject the same handoff
             if _doc.strip():

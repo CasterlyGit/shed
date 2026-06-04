@@ -39,6 +39,34 @@ def test_inject_skips_in_private_mode(memdir, monkeypatch):
     assert res.block == ""
 
 
+def test_pending_inject_consumed_one_shot_interactive(memdir, monkeypatch):
+    from shed.config import state_dir
+
+    monkeypatch.delenv("SHED_ORIGIN", raising=False)
+    state_dir().mkdir(parents=True, exist_ok=True)
+    pending = state_dir() / "pending-inject.md"
+    pending.write_text("# Handoff\nresume the widget dock polish")
+    res = inject_for_prompt("continue")
+    assert res.skipped_reason == "pending-handoff-injected"
+    assert "widget dock" in res.block
+    assert not pending.exists()  # one-shot
+
+
+def test_pending_inject_never_consumed_by_phone_origin(memdir, monkeypatch):
+    """A phone-origin (headless watcher) session must not steal the owner's
+    pending handoff — the file is one-shot and belongs to the next
+    interactive prompt."""
+    from shed.config import state_dir
+
+    monkeypatch.setenv("SHED_ORIGIN", "phone")
+    state_dir().mkdir(parents=True, exist_ok=True)
+    pending = state_dir() / "pending-inject.md"
+    pending.write_text("# Handoff\ninteractive context")
+    res = inject_for_prompt("autonomous run prompt")
+    assert res.skipped_reason != "pending-handoff-injected"
+    assert pending.exists()  # untouched, still waiting for the owner
+
+
 def test_format_block_truncates_long_body(memdir):
     _seed(memdir)
     mems = discover()

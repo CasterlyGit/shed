@@ -59,6 +59,37 @@ statusline capture hook + mitm sniffer), workflow-watcher's `active_run.json`
   (watch.py parsing a walled run's output) covers the blind stretch when no
   interactive session refreshes rate-limits.json.
 
+## Trigger policy — who may touch what (locked-in contract)
+
+Every Claude session has exactly one **origin**, and every lifecycle trigger
+keys off it. The tag is `SHED_ORIGIN=phone`, set by watch.py on the claude
+processes it spawns; absence of the tag = interactive.
+
+| trigger | `interactive` (your terminals) | `phone` (watcher-spawned headless) |
+|---|---|---|
+| wall imminent (≥95%, fresh) | compact-guard warns + handoff ID — **nothing is killed, ever** | runtime SIGINTs the pgid → Stop-hook handoff + git checkpoint → resume queue |
+| hit wall blind | compact-guard covers next prompt; you decide | watch.py parses the corpse → walled re-queue |
+| window resets | nothing — you resume when you want | auto-respawn `--continue` at resets_at+120s |
+| Stop hook (turn end) | handoff doc + pending-inject.md + threshold learning | handoff doc ONLY (no pending-inject, no learner) |
+| pending-inject.md | consumed one-shot on next prompt | **never read, never written** |
+| compact-guard interjections | yes (token warn + /fresh nudge) | **exit 0** — no human exists to answer them |
+| long iteration | n/a (you drive) | `kind=goal`: relaunch cycles until `GOAL-COMPLETE` or deadline |
+| respawn cap | n/a | build: 8 attempts; goal: deadline-bound (`expires_at`, default 48h) |
+| closing the session | **only you** — explicit `shed park` is the sole handover verb | runtime owns the lifecycle; STOP kills |
+
+**Invariant:** the runtime only ever signals pids it spawned (the
+`active_run.json` lock written by watch.py). There is no code path that
+closes, signals, or recycles an interactive terminal. `shed park [DIR]
+[--goal "..." --hours N]` is the explicit opt-in: it queues the workspace and
+the respawn's `claude --continue` carries that conversation on headlessly —
+the terminal window itself stays yours.
+
+**Goal runs** (`workflow goal: <title>` from the phone, or `shed park --goal`):
+the outer loop lives in the harness, not the session — each cycle ends, watch.py
+re-queues (+180s) unless the final message's last line is `GOAL-COMPLETE` or
+`expires_at` passed (body directives `hours:`/`days:` override the 48h default).
+Wall pauses interleave transparently; email-back on cycle 0 and every 10th.
+
 ## The pause→resume loop (S1-E3)
 
 1. **Proactive:** fresh data + `five_hour.used_pct ≥ 95` + a live headless run

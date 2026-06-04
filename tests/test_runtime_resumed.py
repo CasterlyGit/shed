@@ -89,6 +89,39 @@ def test_exhausted_entry_is_retired(watcher_dir):
     assert (resume_queue_dir() / "done" / "job.exhausted.json").exists()
 
 
+def test_goal_entry_outlives_build_cap(watcher_dir, monkeypatch):
+    """Goal runs are deadline-bound: attempts far past MAX_ATTEMPTS still respawn."""
+    now = time.time()
+    spawned = []
+    monkeypatch.setattr(resumed, "respawn", lambda e: spawned.append(e["slug"]) or 1)
+    resumed.enqueue_resume("marathon", "/tmp/ws", resume_at=now - 10, kind="goal",
+                           goal="polish until done", attempts=resumed.MAX_ATTEMPTS + 30,
+                           expires_at=now + 3600)
+    assert resumed.process_resume_queue(_gov(), now=now) == ["respawn:marathon"]
+    assert spawned == ["marathon"]
+
+
+def test_expired_goal_entry_is_retired(watcher_dir, monkeypatch):
+    now = time.time()
+    monkeypatch.setattr(resumed, "respawn", lambda e: 1)
+    resumed.enqueue_resume("late", "/tmp/ws", resume_at=now - 10, kind="goal",
+                           goal="g", expires_at=now - 5)
+    actions = resumed.process_resume_queue(_gov(), now=now)
+    assert actions == ["expired:late"]
+    assert (resume_queue_dir() / "done" / "late.expired.json").exists()
+
+
+def test_park_enqueues_due_now(watcher_dir, tmp_path):
+    ws = tmp_path / "myproj"
+    ws.mkdir()
+    p = resumed.park(str(ws), goal="ship v1", hours=24)
+    e = read_json(p)
+    assert e["reason"] == "parked" and e["kind"] == "goal"
+    assert e["resume_at"] <= time.time() + 1          # due immediately
+    assert 0 < e["expires_at"] - time.time() <= 24 * 3600 + 5
+    assert e["max_attempts"] == resumed.GOAL_MAX_ATTEMPTS
+
+
 def test_one_respawn_per_tick(watcher_dir, monkeypatch):
     now = time.time()
     spawned = []
@@ -104,6 +137,42 @@ def test_one_respawn_per_tick(watcher_dir, monkeypatch):
 # ---------------------------------------------------------------------------
 # Pause
 # ---------------------------------------------------------------------------
+
+
+def test_pause_carries_goal_identity_across_wall(watcher_dir, tmp_path, monkeypatch):
+    """A goal job paused at the wall must come back as a goal job: kind, goal
+    text, deadline, and iteration count all survive into the queue entry."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    exp = int(time.time() + 7200)
+    (ws / "_run.json").write_text(json.dumps(
+        {"model": "opus", "kind": "goal", "goal": "make realm hit 60fps",
+         "expires_at": exp, "resume_attempt": 4}))
+    monkeypatch.setattr(resumed, "_kill_group", lambda pid, s: None)
+    monkeypatch.setattr(resumed, "pid_alive", lambda p: False)
+    monkeypatch.setattr(resumed.subprocess, "run",
+                        lambda *a, **k: type("R", (), {"returncode": 0})())
+    resumed.pause_active_run(
+        {"pid": 4242, "slug": "realm", "title": "Realm", "workspace": str(ws)},
+        _gov(wall=True), sleep_fn=lambda s: None,
+    )
+    e = read_json(resume_queue_dir() / "realm.json")
+    assert e["kind"] == "goal" and e["goal"] == "make realm hit 60fps"
+    assert e["expires_at"] == exp and e["attempts"] == 4
+    assert e["max_attempts"] == resumed.GOAL_MAX_ATTEMPTS
+
+
+def test_respawn_uses_goal_prompt(watcher_dir, tmp_path, monkeypatch):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    monkeypatch.setattr(resumed.subprocess, "Popen",
+                        lambda *a, **k: type("P", (), {"pid": 999})())
+    pid = resumed.respawn({"slug": "j", "workspace": str(ws), "kind": "goal",
+                           "goal": "ship the thing", "expires_at": 99, "attempts": 2})
+    assert pid == 999
+    st = read_json(ws / "_run.json")
+    assert "ship the thing" in st["prompt"] and "GOAL-COMPLETE" in st["prompt"]
+    assert st["kind"] == "goal" and st["resume_attempt"] == 3
 
 
 def test_pause_kills_group_and_enqueues(watcher_dir, tmp_path, monkeypatch):

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 import typer
 from rich.console import Console
@@ -950,6 +951,33 @@ def stop_cmd(
     if r.get("killed"):
         msg += f" — sent SIGINT to active run {r['killed']!r}"
     console.print(f"[red]{msg}[/red]")
+
+
+@app.command("park")
+def park_cmd(
+    workspace: Path = typer.Argument(None, help="project dir (default: cwd) whose conversation the runtime continues"),
+    title: str = typer.Option("", "--title", "-t", help="label for the queue entry"),
+    goal: str = typer.Option("", "--goal", "-g", help="iterate toward this goal until met or deadline (goal run)"),
+    hours: float = typer.Option(48.0, "--hours", help="goal deadline horizon"),
+    model: str = typer.Option("", "--model", "-m", help="model for the headless continuation"),
+) -> None:
+    """Explicitly hand THIS terminal's work to the autonomous runtime.
+
+    The only way interactive work enters the autonomous loop — never automatic.
+    The respawn runs `claude --continue` in the workspace, so the parked
+    conversation continues headlessly with full context; your terminal is
+    untouched and yours to close whenever.
+    """
+    from shed.runtime import resumed
+
+    ws = workspace or Path.cwd()
+    p = resumed.park(str(ws), title=title, goal=goal, hours=hours, model=model)
+    entry = json.loads(p.read_text())
+    console.print(
+        f"[green]parked[/green] {entry['slug']!r} ({entry['kind']}) — "
+        f"runtime picks it up next idle tick"
+        + (f"; iterates up to {hours:.0f}h until GOAL-COMPLETE" if goal else "")
+    )
 
 
 @app.command("go")
