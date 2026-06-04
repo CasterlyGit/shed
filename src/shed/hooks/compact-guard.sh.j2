@@ -15,7 +15,11 @@ exec 2>>"{{ log_file }}"
 # DIFFERENT (interactive) session's context — firing here would freeze an
 # autonomous run waiting for a human that doesn't exist. Their context hygiene
 # is handled by auto-compact + shed's PreCompact (selfcompact) instead.
-if [ "${SHED_ORIGIN:-}" = "phone" ]; then cat >/dev/null; exit 0; fi
+# Conductor-spawned headless workers (claude -p under conductord) likewise:
+# hijacking their prompt replaces task output with guard text (verified
+# 2026-06-04 — broke conductor's intent splitter). Budget is governed
+# upstream by conductord's BudgetGovernor reading the same rate-limits.json.
+if [ "${SHED_ORIGIN:-}" = "phone" ] || [ -n "${CONDUCTOR_WORKER:-}" ]; then cat >/dev/null; exit 0; fi
 
 input="$(cat)"
 SID="$(printf '%s' "$input" | jq -r '.session_id // empty' 2>/dev/null || true)"
