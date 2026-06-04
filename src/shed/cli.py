@@ -899,6 +899,104 @@ def log_(n: int = typer.Option(20, "-n", help="how many entries")) -> None:
 
 
 # ---------------------------------------------------------------------------
+# S1 runtime — governor / tick / kill-switch / leases / digest
+# ---------------------------------------------------------------------------
+
+
+@app.command("runtime-tick")
+def runtime_tick() -> None:
+    """One runtime heartbeat (launchd entrypoint): governor → host → resume."""
+    from shed.runtime import resumed
+
+    result = resumed.tick()
+    print(json.dumps(result.get("actions", result), default=str))
+
+
+@app.command("governor")
+def governor_cmd(
+    as_json: bool = typer.Option(False, "--json", help="machine-readable report"),
+) -> None:
+    """Budget report: both clocks, pacing, and the fan-out dial."""
+    from shed.runtime import governor as gov_mod
+
+    r = gov_mod.tick()
+    if as_json:
+        print(json.dumps(r, indent=2))
+        return
+    fh, sd = r.get("five_hour") or {}, r.get("seven_day") or {}
+    fresh = "[green]fresh[/green]" if r["fresh"] else "[yellow]stale[/yellow]"
+    console.print(
+        f"5h [bold]{fh.get('used_pct', '?')}%[/bold] "
+        f"(resets in {fh.get('minutes_to_reset', '?')}m) · "
+        f"week [bold]{sd.get('used_pct', '?')}%[/bold] "
+        f"(resets in {sd.get('minutes_to_reset', '?')}m) · "
+        f"pace {r.get('pace_delta', '?')} · fanout ×{r.get('fanout_scale', '?')} · "
+        f"data {fresh}"
+        + (" · [red]WALL IMMINENT[/red]" if r.get("wall_imminent") else "")
+    )
+
+
+@app.command("stop")
+def stop_cmd(
+    keep_running: bool = typer.Option(
+        False, "--keep-running", help="engage STOP without killing the active run"
+    ),
+) -> None:
+    """Kill-switch: halt respawns/keepawake (and the active run, by default)."""
+    from shed.runtime import resumed
+
+    r = resumed.engage_stop(kill_active=not keep_running)
+    msg = "STOP engaged"
+    if r.get("killed"):
+        msg += f" — sent SIGINT to active run {r['killed']!r}"
+    console.print(f"[red]{msg}[/red]")
+
+
+@app.command("go")
+def go_cmd() -> None:
+    """Clear the STOP kill-switch — the runtime loop may pause/respawn again."""
+    from shed.runtime import resumed
+
+    cleared = resumed.clear_stop()
+    console.print("[green]STOP cleared[/green]" if cleared else "STOP was not engaged")
+
+
+@app.command("lease")
+def lease_cmd(
+    name: str = typer.Argument(..., help="lease name (one file per name)"),
+    ttl: int = typer.Option(3600, "--ttl", help="seconds to hold the host awake"),
+    release: bool = typer.Option(False, "--release", help="release instead of grant"),
+) -> None:
+    """Hold (or release) a keepawake lease — S2 jobs and scripts register here."""
+    from shed.runtime import host as host_mod
+
+    if release:
+        ok = host_mod.release(name)
+        console.print("released" if ok else "no such lease")
+    else:
+        host_mod.lease(name, ttl, holder="cli")
+        console.print(f"lease [bold]{name}[/bold] held for {ttl}s")
+
+
+@app.command("digest")
+def digest_cmd(
+    send: bool = typer.Option(False, "--send", help="email it (else just print)"),
+) -> None:
+    """Compose (and optionally send) the runtime digest for the last 24h."""
+    import time as _time
+
+    from shed.runtime import governor as gov_mod
+    from shed.runtime import resumed
+
+    gov = gov_mod.compute_report()
+    body = resumed.compose_digest(since=_time.time() - 86400, gov=gov)
+    print(body)
+    if send:
+        ok = resumed._send_email("⛅ shed runtime — digest (manual)", body)
+        console.print("[green]sent[/green]" if ok else "[red]send failed[/red]")
+
+
+# ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
 

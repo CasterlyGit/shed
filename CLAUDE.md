@@ -15,6 +15,7 @@ Claude Code that learns you — silent memory injection, self-updating notes, se
 - `src/shed/permit.py` — L3 permission-pattern learning; `record_approval()`, `apply_proposal()`
 - `src/shed/redact.py` — PII redaction before writing proposals
 - `src/shed/classify.py` — maps free-text correction to an allowlisted category
+- `src/shed/runtime/` — S1 conductor runtime: `governor.py` (both budget clocks → governor.json + fanout dial), `host.py` (work/AC-gated keepawake: caffeinate + pmset disablesleep), `resumed.py` (5h-wall pause→resume daemon, STOP kill-switch, morning digest); launchd `com.casterly.shed-runtime` ticks `shed runtime-tick` every 60s; contract in `docs/runtime.md`
 
 ## Architecture / patterns
 - Three Claude Code hooks drive shed: `UserPromptSubmit` → inject, `PostToolUse` → observe_tool_use, `Stop` → reflect
@@ -40,7 +41,7 @@ uv run python -m shed status     # show current mode + pending count
 ```
 
 ## Current state & active work
-- Working: inject, observe, reflect, quality L1, permits L3, thresholds L5, statusline, brief
+- Working: inject, observe, reflect, quality L1, permits L3, thresholds L5, statusline, brief, S1 runtime (governor/host/resumed — built 2026-06-04, E2E wall-crossing verified; lid-close survival needs the one sudoers line install-runtime.sh prints)
 - Haiku judge (`observe.use_haiku_judge`) is wired but off by default — keep cost zero
 - Embedder is onnxruntime/bge-small (not torch) — do not introduce torch dependency (#8 fix)
 - `evolve` (cold-memory pruning + dedup) is config-gated; `evolve.enabled=True` but only runs on-demand via `shed evolve`
