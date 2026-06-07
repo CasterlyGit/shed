@@ -80,6 +80,20 @@ def reflect_from_stop_payload(
         except Exception:
             proposal = None
 
+    # Passive procedure capture: scan transcript for coherent tool bursts.
+    # Fail-open — any exception must not break the Stop hook.
+    try:
+        from shed.observe_procedure import observe_procedure
+
+        session_id = payload.get("session_id", "") if isinstance(payload, dict) else ""
+        observe_procedure(
+            transcript_path=Path(transcript_path) if transcript_path else None,
+            session_id=session_id,
+            cfg=cfg,
+        )
+    except Exception:
+        pass
+
     # Auto-write stats row at session end (fail-open).
     try:
         from shed.stats import write_stats
