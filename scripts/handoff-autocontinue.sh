@@ -80,7 +80,10 @@ if [ -z "$CANDIDATES" ]; then
     exit 0
 fi
 
-# Advance baseline so the NEXT run only sees truly new files.
+# Advance baseline ONLY after we've captured the candidate list.
+# This ensures: if launchd fires again (e.g. for an unrelated write in state/),
+# we don't re-process the same files — and the baseline never races ahead of
+# a handoff file that was written after we started scanning.
 touch "$MARKER_FILE"
 
 # ── Serialize all processing behind a global lock ───────────────────────────
