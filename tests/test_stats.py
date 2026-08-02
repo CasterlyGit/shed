@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 from shed.config import state_dir
 from shed.quality import log_citations, log_injection

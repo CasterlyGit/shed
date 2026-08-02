@@ -41,6 +41,8 @@ from . import (
     atomic_write_json,
     digest_event,
     digest_path,
+    governor,
+    host,
     now_epoch,
     pid_alive,
     read_json,
@@ -48,7 +50,6 @@ from . import (
     stop_engaged,
     stop_flag,
 )
-from . import governor, host
 
 GRACE_S = int(os.environ.get("SHED_PAUSE_GRACE_S", "120"))
 RESUME_BUFFER_S = 120          # spawn a little after resets_at, not on the dot

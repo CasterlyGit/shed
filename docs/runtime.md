@@ -1,7 +1,7 @@
 # S1 Autonomous Runtime — the conductor's foundation
 
 Status: live. Four epics from `shed-ho-5e9a0001`: always-on host, budget
-governor, pause→handoff→resume, remote ingress. One launchd heartbeat
+governor, pause→handoff→continuation, remote ingress. One launchd heartbeat
 (`com.casterly.shed-runtime` → `shed runtime-tick`, every 60s) drives the
 first three; workflow-watcher (`com.casterly.workflow-watcher`) carries the
 fourth and cooperates through the state-file contract below.
@@ -18,7 +18,7 @@ fourth and cooperates through the state-file contract below.
  │ shed runtime-tick (60s):                                        │
  │  governor → governor.json   (both clocks, pace, fanout dial)    │
  │  host     → caffeinate + pmset disablesleep (work- & AC-gated)  │
- │  resumed  → wall pause / resume respawn / STOP / morning digest │
+ │  continuation worker  → wall pause / scheduled continuation / STOP / morning digest │
  └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -28,13 +28,13 @@ fourth and cooperates through the state-file contract below.
 |---|---|---|
 | `governor.json` | runtime-tick → S2, watcher, anyone | budget report; `fanout_scale` is the dial S2 sizes agent fleets with |
 | `STOP` | `shed stop`, email "workflow stop" → everyone | kill-switch: no respawns, no new builds, keepawake releases |
-| `resume-queue/<slug>.json` | resumed (proactive) + watch.py (reactive) → resumed | runs waiting for the 5h window to reset |
+| continuation queue entry | runtime workers | runs waiting for the 5h window to reset |
 | `keepawake-leases/*.json` | any job (`shed lease NAME --ttl N`) → host | "keep the laptop awake while I run"; expired leases groomed automatically |
 | `digest.jsonl` | all runtime modules → morning digest | append-only event log |
 
 External cooperators: `~/.claude/state/rate-limits.json` (budget data plane —
 statusline capture hook + mitm sniffer), workflow-watcher's `active_run.json`
-(live headless run; the host treats it as work, resumed serializes around it).
+(live headless run; the host treats it as work, and the continuation worker serializes around it).
 
 ## governor.json shape
 
@@ -67,9 +67,9 @@ processes it spawns; absence of the tag = interactive.
 
 | trigger | `interactive` (your terminals) | `phone` (watcher-spawned headless) |
 |---|---|---|
-| wall imminent (≥95%, fresh) | compact-guard warns + handoff ID — **nothing is killed, ever** | runtime SIGINTs the pgid → Stop-hook handoff + git checkpoint → resume queue |
+| wall imminent (≥95%, fresh) | compact-guard warns + handoff ID — **nothing is killed, ever** | runtime SIGINTs the pgid → Stop-hook handoff + git checkpoint → continuation queue |
 | hit wall blind | compact-guard covers next prompt; you decide | watch.py parses the corpse → walled re-queue |
-| window resets | nothing — you resume when you want | auto-respawn `--continue` at resets_at+120s |
+| window resets | nothing — you continue when you want | auto-respawn `--continue` at resets_at+120s |
 | Stop hook (turn end) | handoff doc + pending-inject.md + threshold learning | handoff doc ONLY (no pending-inject, no learner) |
 | pending-inject.md | consumed one-shot on next prompt | **never read, never written** |
 | compact-guard interjections | yes (token warn + /fresh nudge) | **exit 0** — no human exists to answer them |
@@ -90,18 +90,18 @@ re-queues (+180s) unless the final message's last line is `GOAL-COMPLETE` or
 `expires_at` passed (body directives `hours:`/`days:` override the 48h default).
 Wall pauses interleave transparently; email-back on cycle 0 and every 10th.
 
-## The pause→resume loop (S1-E3)
+## The pause→continuation loop (S1-E3)
 
 1. **Proactive:** fresh data + `five_hour.used_pct ≥ 95` + a live headless run
    → SIGINT its process group. claude checkpoints (Stop hook → handoff-writer),
    the watch.py wrapper traps SIGINT (no SIGKILL teardown) and finalizes as
-   `paused`, resumed git-snapshots the workspace and queues
-   `resume_at = resets_at + 120s`.
+   `paused`, the continuation worker git-snapshots the workspace and queues
+   a continuation time of `resets_at + 120s`.
 2. **Reactive:** a run that dies with "usage limit reached" in its output is
    re-queued by watch.py itself (`walled`), timed from governor's last fresh
    `resets_at`, else exponential backoff capped at 4h.
-3. **Respawn:** first tick past `resume_at`, no active run, no STOP →
-   relaunch through `watch.py --run` with `resume: true` →
+3. **Respawn:** first eligible tick, with no active run and no STOP →
+   relaunch through `watch.py --run` with a continuation flag →
    `claude --continue -p` in the same workspace: full conversation context
    back, email-back summary on completion, attempts capped at 8.
 
@@ -120,8 +120,8 @@ Wall pauses interleave transparently; email-back on cycle 0 and every 10th.
 Email subjects (from the owner's own address only):
 - `workflow <title>` + body → autonomous build run (serial queue, unchanged)
 - `workflow stop` → STOP + SIGINT the active run; ack emailed back
-- `workflow go` / `workflow resume` → clear STOP; ack emailed back
-- `workflow status` → active run, kill-switch, budget, resume queue, last runs
+- `workflow go` / continuation command → clear STOP; acknowledgement is sent back
+- `workflow status` → active run, kill-switch, budget, continuation queue, last runs
 
 ## CLI
 

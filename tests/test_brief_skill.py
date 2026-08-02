@@ -9,7 +9,6 @@ from rich.console import Console
 from shed.brief import PendingProposal, _accept, list_pending
 from shed.config import proposals_dir  # noqa: F401  (used below)
 
-
 SKILL_PROPOSAL = """---
 kind: skill
 name: fly-deploy

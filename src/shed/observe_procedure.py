@@ -36,7 +36,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from shed.config import Config, current_mode, is_globally_disabled, load_config, proposals_dir
+from shed.config import Config, current_mode, is_globally_disabled, proposals_dir
 from shed.memory import now_iso, slugify
 
 # ---------------------------------------------------------------------------

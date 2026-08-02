@@ -31,11 +31,13 @@ class EvolveReport:
     proposals_written: list[Path]
 
 
-def run_evolve(cfg: Config | None = None) -> EvolveReport:
+def run_evolve(
+    cfg: Config | None = None, *, now: datetime | None = None
+) -> EvolveReport:
     cfg = cfg or load_config()
     mems = discover()
 
-    archived = _archive_cold(mems, cfg.evolve.cold_days)
+    archived = _archive_cold(mems, cfg.evolve.cold_days, now=now)
     # Refresh after archiving — paths changed.
     mems = [m for m in discover() if m.path.exists()]
     dups = _find_duplicates(mems, cfg) if cfg.evolve.enabled else []
@@ -75,8 +77,11 @@ def run_evolve(cfg: Config | None = None) -> EvolveReport:
 # ---------------------------------------------------------------------------
 
 
-def _archive_cold(mems: list[Memory], cold_days: int) -> list[Memory]:
-    cutoff = datetime.now().astimezone() - timedelta(days=cold_days)
+def _archive_cold(
+    mems: list[Memory], cold_days: int, *, now: datetime | None = None
+) -> list[Memory]:
+    current = now or datetime.now().astimezone()
+    cutoff = current - timedelta(days=cold_days)
     archived: list[Memory] = []
     for m in mems:
         if m.pinned:
