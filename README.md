@@ -12,6 +12,11 @@ correction proposals, permission-pattern proposals, review CLI, and memory GC
 are implemented. Shed is not a hosted service and does not autonomously accept
 or publish proposed changes.
 
+Published `v0.2.0` and `v0.3.0` tags have non-monotonic ancestry. The exact
+history and prospective release gate are documented in
+[docs/VERSIONING.md](docs/VERSIONING.md); no tag or release is moved or
+recreated to make the history appear linear.
+
 ---
 
 ## How it works
