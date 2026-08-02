@@ -955,7 +955,7 @@ def stop_cmd(
 
 @app.command("park")
 def park_cmd(
-    workspace: Path = typer.Argument(None, help="project dir (default: cwd) whose conversation the runtime continues"),
+    workspace: Path = typer.Argument(None, help="project dir (default: cwd) whose conversation the runtime continues"),  # noqa: B008
     title: str = typer.Option("", "--title", "-t", help="label for the queue entry"),
     goal: str = typer.Option("", "--goal", "-g", help="iterate toward this goal until met or deadline (goal run)"),
     hours: float = typer.Option(48.0, "--hours", help="goal deadline horizon"),

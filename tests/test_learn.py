@@ -7,8 +7,6 @@ can assert convergence behaviour exactly.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from shed.config import load_config
 from shed.learn import (
     PROTECTED_CLOSE,
@@ -16,7 +14,6 @@ from shed.learn import (
     Iteration,
     _distill_strategy,
     _make_description,
-    _prior_score,
     _saved_ratio,
     _skill_markdown,
     extract_skill_body,

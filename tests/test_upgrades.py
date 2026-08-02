@@ -14,7 +14,6 @@ from pathlib import Path
 import pytest
 from rich.console import Console
 
-
 # --- reflect: Stop-hook-feedback noise filter --------------------------------
 
 

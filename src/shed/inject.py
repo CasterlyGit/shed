@@ -79,6 +79,7 @@ def inject_for_prompt(
     # normal memory injection.
     try:
         import os as _os
+
         from .config import state_dir as _state_dir
 
         _pending = Path(_state_dir()) / "pending-inject.md"

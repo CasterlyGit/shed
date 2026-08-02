@@ -6,10 +6,7 @@ All tests are deterministic, hermetic, and zero-cost (no LLM calls, no network).
 from __future__ import annotations
 
 import json
-import time
 from pathlib import Path
-
-import pytest
 
 from shed.observe_procedure import (
     PROTECTED_CLOSE,
@@ -17,13 +14,11 @@ from shed.observe_procedure import (
     ProcedureSignal,
     _distill_tool_sequence,
     _make_description,
-    _seen_count,
     _skill_markdown_from_signal,
     _write_procedure_proposal,
     detect_procedure,
     observe_procedure,
 )
-
 
 # ---------------------------------------------------------------------------
 # Transcript fixture builder

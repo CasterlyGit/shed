@@ -17,7 +17,7 @@ from shed.reflect import _extract_last_turns, reflect_from_stop_payload
 
 
 def _write_transcript(path: Path, lines: list[dict]) -> None:
-    path.write_text("\n".join(json.dumps(l) for l in lines) + "\n")
+    path.write_text("\n".join(json.dumps(line) for line in lines) + "\n")
 
 
 def _msg(role: str, text: str) -> dict:
@@ -114,7 +114,7 @@ def test_reflect_logs_citation_when_assistant_quotes_memory(tmp_path, memdir, sh
     assert n_cited == 1, "citation should have been detected and logged"
 
     q = (state / "quality.jsonl").read_text().strip().splitlines()
-    cited_events = [json.loads(l) for l in q if json.loads(l).get("event") == "cited"]
+    cited_events = [json.loads(line) for line in q if json.loads(line).get("event") == "cited"]
     assert any(e["memory_id"] == mem_id for e in cited_events)
 
 
@@ -130,7 +130,7 @@ def test_reflect_writes_proposal_when_user_corrects(tmp_path, shed_home_path):
     # but the corrections log should still record the signal.
     corrections_log = shed_home_path / "state" / "corrections.jsonl"
     assert corrections_log.exists(), "correction signal must be logged regardless of classify"
-    rows = [json.loads(l) for l in corrections_log.read_text().splitlines() if l.strip()]
+    rows = [json.loads(line) for line in corrections_log.read_text().splitlines() if line.strip()]
     assert rows and "don't" in rows[-1]["text"].lower() or "instead" in rows[-1]["text"].lower()
 
 

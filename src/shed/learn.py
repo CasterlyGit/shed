@@ -32,14 +32,13 @@ unattended. It runs only on explicit ``shed learn`` invocation, and
 from __future__ import annotations
 
 import json
+import os
 import shlex
+import shutil
 import subprocess
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-
-import os
-import shutil
 
 from shed.config import (
     Config,
@@ -129,7 +128,7 @@ def has_converged(
     if len(ok) < window + 1:
         return False
     recent = ok[-(window + 1):]
-    for prev, cur in zip(recent, recent[1:]):
+    for prev, cur in zip(recent, recent[1:], strict=False):
         if _rel_delta(prev.cost, cur.cost) >= cost_eps:
             return False
         if _rel_delta(float(prev.turns), float(cur.turns)) >= turns_eps:
