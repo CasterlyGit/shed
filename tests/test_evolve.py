@@ -1,6 +1,7 @@
 """Evolve / GC tests."""
 
 import shutil
+from datetime import UTC, datetime
 from pathlib import Path
 
 from shed.evolve import run_evolve
@@ -17,7 +18,7 @@ def _seed(memdir):
 
 def test_archive_cold_memory(memdir, shed_home_path):
     _seed(memdir)
-    rep = run_evolve()
+    rep = run_evolve(now=datetime(2026, 6, 1, tzinfo=UTC))
     assert "cold-note" in rep.archived
     # Hot memory survived.
     surviving = {m.slug for m in discover()}
