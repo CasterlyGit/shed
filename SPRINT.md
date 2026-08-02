@@ -1,7 +1,7 @@
-# shed — Portfolio Upgrade Sprint
+# shed — Documentation Improvement Sprint
 
 ## Goal
-Make shed look like a deep, production-grade project to a technical recruiter or Google interviewer
+Make Shed easier for a technical evaluator to understand from public source and documentation.
 spending 30 seconds on the repo. Every section should be a system design talking point.
 
 ## What was done this session (2026-05-25)
@@ -49,7 +49,7 @@ spending 30 seconds on the repo. Every section should be a system design talking
 - `uv publish` — makes `pip install shed` work
 - Add PyPI badge to README
 
-## The "Google interview" framing
+## Evaluation framing
 Shed proves:
 - You understand semantic retrieval (ONNX pipeline, cosine + quality re-ranking)
 - You understand feedback loops (L1 quality loop, exp-decay scoring)
