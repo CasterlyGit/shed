@@ -4,9 +4,13 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-**Shed is a Claude Code hook layer that silently injects the 2–3 most relevant memory files before every prompt — local ONNX embeddings, ~150ms, no LLM call.**
+**Shed is a Claude Code hook layer that retrieves a small set of relevant local
+memory files before a prompt and queues proposed learning changes for review.**
 
-**Status:** v0.2 — hooks wired, fast embedder, permission-pattern learning
+**Status:** v0.2 source tree — local hook installation, ONNX retrieval,
+correction proposals, permission-pattern proposals, review CLI, and memory GC
+are implemented. Shed is not a hosted service and does not autonomously accept
+or publish proposed changes.
 
 ---
 
@@ -14,11 +18,13 @@
 
 | Hook | Trigger | What shed does | Latency |
 |---|---|---|---|
-| `UserPromptSubmit` | before each prompt | embed query, retrieve top-k memories, inject as `<shed-context>` block | ~150ms |
+| `UserPromptSubmit` | before each prompt | embed query, retrieve top-k memories, inject as `<shed-context>` block | bounded by the configured hook timeout |
 | `Stop` | after correction signal | classify, redact PII, queue proposal | async |
-| `PostToolUse` | after tool-call approval | log pattern, check repeat threshold | <10ms |
+| `PostToolUse` | after tool-call approval | log pattern, check repeat threshold | local processing |
 
-**No LLM call in the retrieval path. All local.** The embedder is `bge-small-en-v1.5` via ONNX Runtime — 6ms encode after warmup, no network, no API key needed.
+**No LLM call is made in the retrieval path.** The default embedder is
+`bge-small-en-v1.5` through ONNX Runtime. Initial model acquisition requires a
+network connection; retrieval is local after the model artifacts are present.
 
 Four systems:
 
@@ -45,7 +51,9 @@ Measured with hash embedder on synthetic 200-item memory set. Run `python script
 | top-k retrieval (500 memories) | 0.2ms | 0.4ms | 4.8ms |
 | full inject round-trip (200 memories) | 0.1ms | 0.2ms | 0.4ms |
 
-ONNX embedder (bge-small-en-v1.5): ~150ms cold, ~8ms warm. Full results: [docs/benchmarks.md](docs/benchmarks.md).
+These figures cover the deterministic hash fixture, not the ONNX embedder or
+end-to-end hook latency. Full scope and limitations:
+[docs/benchmarks.md](docs/benchmarks.md).
 
 ---
 
@@ -60,6 +68,30 @@ shed doctor         # confirms everything is wired
 ```
 
 New Claude Code sessions pick up the hooks automatically. No wrapper, no proxy.
+`shed init` changes local hook configuration; it is not required to run the
+repository verification path below.
+
+## Evaluation and verification
+
+Shed is a local developer-tool layer, not a hosted service or an autonomous
+change system. Retrieval runs locally; proposed lessons and permission patterns
+remain subject to human review through `shed brief` and the permit workflow.
+Network sync is opt-in and disabled by default.
+
+The repository CI uses the hash embedder so verification does not download a
+model. Reproduce its focused checks with:
+
+```bash
+uv venv --python 3.11
+source .venv/bin/activate
+uv pip install -e ".[dev]"
+ruff check src tests
+SHED_EMBEDDER=hash pytest -q
+```
+
+The hash embedder is a test fixture, not a claim about production embedding
+quality. See [docs/benchmarks.md](docs/benchmarks.md) for the documented
+benchmark setup and limitations.
 
 ---
 
@@ -91,7 +123,10 @@ shed permit scan                      # manually run the proposal generator
 shed stats          # hit rate, accept/reject ratio, top 5 injected memories
 ```
 
-Stats are written to `~/.shed/state/stats.jsonl` (one line per call). The `injection_hit_rate` is a smoothed score — how often an injected memory was actually referenced in the response. A healthy number is 0.3–0.6; below 0.2 suggests the index needs `shed evolve`.
+Stats are written to `~/.shed/state/stats.jsonl` (one line per call). The
+`injection_hit_rate` is a local smoothed score for how often an injected memory
+was referenced in the response. The example below is illustrative, not a
+project benchmark.
 
 Sample output:
 ```
@@ -132,7 +167,8 @@ PostToolUse hook
 
 **Key properties:**
 - **Fail-open.** Any exception in `shed inject` returns `""` — the prompt proceeds unmodified, Claude Code keeps running.
-- **Hard timeout.** The inject hook must finish in <200ms (shell wrapper enforces 2s).
+- **Timeout boundary.** The default inject timeout is 2000 ms and the shell
+  wrapper enforces that boundary.
 - **No LLM calls** in any hot path. Proposals can optionally use a Haiku judge for ambiguous corrections, but it's off by default (`use_haiku_judge = false`).
 - **Manual-approve by default.** Every proposal goes through `shed brief`. `auto_apply = false`.
 
@@ -188,13 +224,13 @@ remote = "git@github.com:CasterlyGit/shed-state-private.git"
 ## Roadmap
 
 - [x] Memory injection via UserPromptSubmit hook
-- [x] Local ONNX embeddings (bge-small-en-v1.5, ~6ms encode)
+- [x] Local ONNX embeddings (bge-small-en-v1.5)
 - [x] Correction detection + category-allowlisted proposals
 - [x] PII redactor with Luhn-checked CC detection
 - [x] Memory GC (cold archive + near-duplicate detection)
 - [x] Morning brief with single-key actions
 - [x] `shed doctor`, `shed undo`, `shed mode`
-- [x] **v0.2: ONNX embedder (45s → 6ms encode)**
+- [x] **v0.2: ONNX embedder**
 - [x] **v0.2: `shed permit` — learns permission-prompt patterns**
 - [x] **v0.2: L1 quality loop (cite-tracking → ranking weights)**
 - [x] **v0.2: `shed stats` — injection hit rate, proposal ratios**
