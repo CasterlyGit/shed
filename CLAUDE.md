@@ -15,7 +15,7 @@ Claude Code that learns you — silent memory injection, self-updating notes, se
 - `src/shed/permit.py` — L3 permission-pattern learning; `record_approval()`, `apply_proposal()`
 - `src/shed/redact.py` — PII redaction before writing proposals
 - `src/shed/classify.py` — maps free-text correction to an allowlisted category
-- `src/shed/runtime/` — S1 conductor runtime: `governor.py` (both budget clocks → governor.json + fanout dial), `host.py` (work/AC-gated keepawake: caffeinate + pmset disablesleep), `resumed.py` (5h-wall pause→resume daemon, goal-kind queue entries, `park()`, STOP kill-switch, morning digest); launchd `com.casterly.shed-runtime` ticks `shed runtime-tick` every 60s; trigger-policy contract + matrix in `docs/runtime.md`
+- `src/shed/runtime/` — S1 conductor runtime: budget governor, host keepawake, and continuation worker; launchd `com.casterly.shed-runtime` ticks `shed runtime-tick` every 60s; trigger-policy contract + matrix in `docs/runtime.md`.
 
 ## Architecture / patterns
 - Three Claude Code hooks drive shed: `UserPromptSubmit` → inject, `PostToolUse` → observe_tool_use, `Stop` → reflect
@@ -41,7 +41,7 @@ uv run python -m shed status     # show current mode + pending count
 ```
 
 ## Current state & active work
-- Working: inject, observe, reflect, quality L1, permits L3, thresholds L5, statusline, brief, S1 runtime (governor/host/resumed — built 2026-06-04, E2E wall-crossing verified; lid-close survival needs the one sudoers line install-runtime.sh prints)
+- Working: inject, observe, reflect, quality L1, permits L3, thresholds L5, statusline, brief, and the S1 runtime. Its end-to-end wall-crossing behavior is documented in the runtime guide; lid-close survival needs the sudoers line printed by `install-runtime.sh`.
 - Trigger policy (2026-06-04): every session has one origin — `SHED_ORIGIN=phone` (watcher-spawned) vs interactive (untagged). Phone runs: no compact-guard interjections, no pending-inject read/write, no threshold learning; handoff docs still written. Interactive terminals are NEVER signaled/closed by the runtime — `shed park [--goal]` is the only handover verb. Goal runs (`workflow goal: …` email / `park --goal`) relaunch in cycles until literal `GOAL-COMPLETE` last line or `expires_at` (48h default; `hours:`/`days:` body directives). Matrix: `docs/runtime.md`
 - Haiku judge (`observe.use_haiku_judge`) is wired but off by default — keep cost zero
 - Embedder is onnxruntime/bge-small (not torch) — do not introduce torch dependency (#8 fix)
